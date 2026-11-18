@@ -76,39 +76,64 @@ Check out the [example for writing custom data generators](https://github.com/jg
 
 # Installation
 
-DeepPoseKit requires [Tensorflow](https://github.com/tensorflow/tensorflow) for training and using pose estimation models. [Tensorflow](https://github.com/tensorflow/tensorflow) should be manually installed, along with dependencies such as CUDA and cuDNN, before installing DeepPoseKit:
+This fork uses Python 3.12, TensorFlow 2.21, and Keras 3. From a checkout of this repository, install the locked environment and check that the import works.
 
-- [Tensorflow Installation Instructions](https://www.tensorflow.org/install)
-- Any Tensorflow version >=1.13.0 should be compatible (including 2.0).
-
-DeepPoseKit has only been tested on Ubuntu 18.04, which is the recommended system for using the toolkit. 
-
-Install the latest stable release with pip:
 ```bash
-pip install --update deepposekit
+uv sync --locked
+uv run --locked python -c "from deepposekit.models import StackedDenseNet"
 ```
 
-Install the latest development version with pip:
-```bash
-pip install --update git+https://www.github.com/jgraving/deepposekit.git
-```
+The migration covers `StackedDenseNet`. The [upstream fly example data](https://github.com/jgraving/DeepPoseKit-Data/tree/0aa5e3f5e8f9df63c48ba2bf491354472daa3e7e/datasets/fly) contains the public checkpoint, video, and annotations used below. The examples assume those files are in the current directory. Run your Python script with `uv run --locked python your_script.py`.
 
-You can download example datasets from our [DeepPoseKit Data](https://github.com/jgraving/deepposekit-data) repository:
-```bash
-git clone https://www.github.com/jgraving/deepposekit-data
-```
+## Import a full StackedDenseNet checkpoint
 
-## Installing with Anaconda on Windows
+Use `load_model` for an upstream DeepPoseKit `.h5` or `.hdf5` checkpoint. The checkpoint supplies the model and inference settings.
 
-To install DeepPoseKit on Windows, you must first manually install `Shapely`, one of the dependencies for the [imgaug package](https://github.com/aleju/imgaug):
-```bash
-conda install -c conda-forge shapely
-```
-We also recommend installing DeepPoseKit from within Python rather than using the command line, either from within Jupyter or another IDE, to ensure it is installed in the correct working environment:
 ```python
-import sys
-!{sys.executable} -m pip install --update deepposekit
+from deepposekit.io import VideoReader
+from deepposekit.models import load_model
+
+model = load_model("best_model_densenet.h5", compile=False)
+video = VideoReader("video.avi", gray=True)
+try:
+    frames = video.read_batch(8, asarray=True)
+finally:
+    video.close()
+
+predictions = model.predict(frames, batch_size=1)
+model.save("fly.keras")
+restored = load_model("fly.keras", compile=False)
 ```
+
+For fine-tuning, load with `generator=DataGenerator("annotation_data_release.h5")` from `deepposekit.io`, then call `model.compile(optimizer="adam", loss="mse")` and `model.fit(batch_size=1)`. Use annotations with the checkpoint’s original keypoint order and skeleton. Legacy imports start with fresh optimizer state.
+
+## Import a legacy weights-only file
+
+Construct a matching model before loading a legacy Keras HDF5 export made with `save_weights`. Supply the original architecture, annotated image shape, keypoint order and skeleton, and decoder settings. `pretrained_weights=None` uses the original ImageNet-based architecture and initializes it locally before the import. This example matches a weights-only export of the public fly checkpoint.
+
+```python
+from deepposekit.io import DataGenerator, TrainingGenerator
+from deepposekit.models import StackedDenseNet, load_legacy_weights
+
+annotations = DataGenerator("annotation_data_release.h5")
+training_data = TrainingGenerator(annotations, downsample_factor=3, use_graph=True, sigma=5)
+model = StackedDenseNet(
+    training_data,
+    n_stacks=2,
+    n_transitions=6,
+    growth_rate=48,
+    bottleneck_factor=1,
+    compression_factor=0.5,
+    pretrained=True,
+    pretrained_weights=None,
+    subpixel=True,
+)
+load_legacy_weights(model, "legacy.weights-only.h5")
+model.save("fly-from-weights.keras")
+```
+
+The verification suite covers the published full checkpoint written by Keras `2.2.4-tf` and a weights-only HDF5 export of the same model written by Keras `2.3.0-tf`. The [legacy reference runner](tests/fixtures/capture_legacy_reference.py) recreates the weights-only file and captures the reference outputs.
+
 # Contributors and Development  
    
 DeepPoseKit was developed by [Jake Graving](https://github.com/jgraving) and [Daniel Chae](https://github.com/dchaebae), and is still being actively developed. .
