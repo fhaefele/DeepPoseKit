@@ -14,7 +14,6 @@ jobs:
     timeout-minutes: 15
     env:
       CUDA_VISIBLE_DEVICES: "-1"
-      DPK_LEGACY_REFERENCE_DIR: ${{ runner.temp }}/dpk-reference
       MPLBACKEND: Agg
       OMP_NUM_THREADS: "1"
       TF_ENABLE_ONEDNN_OPTS: "0"
@@ -38,6 +37,8 @@ jobs:
           sudo apt-get install -y libgl1 libglib2.0-0t64
       - name: Capture pinned legacy predictions and stage annotations
         run: |
+          export DPK_LEGACY_REFERENCE_DIR="$RUNNER_TEMP/dpk-reference"
+          printf 'DPK_LEGACY_REFERENCE_DIR=%s\n' "$DPK_LEGACY_REFERENCE_DIR" >> "$GITHUB_ENV"
           legacy_source="$RUNNER_TEMP/dpk-legacy"
           git worktree add --detach "$legacy_source" cecdb0c8c364ea049a3b705275ae71a2f366d4da
           uv run --locked --script tests/fixtures/capture_legacy_reference.py \
