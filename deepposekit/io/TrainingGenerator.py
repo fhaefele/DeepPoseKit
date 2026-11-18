@@ -13,14 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorflow.keras.utils import Sequence
+from keras.utils import PyDataset
 import imgaug.augmenters as iaa
 
 import numpy as np
 import copy
 
-from deepposekit.utils.keypoints import draw_confidence_maps, graph_to_edges
-from deepposekit.utils.image import check_grayscale
+from deepposekit.utils.keypoints import draw_confidence_maps
 from deepposekit.io.BaseGenerator import BaseGenerator
 
 import warnings
@@ -28,7 +27,7 @@ import warnings
 __all__ = ["TrainingGenerator"]
 
 
-class TrainingGenerator(Sequence):
+class TrainingGenerator(PyDataset):
     """
     Generates data for training a model.
     
@@ -91,6 +90,7 @@ class TrainingGenerator(Sequence):
         random_seed=None,
     ):
 
+        super().__init__()
         self.random_seed = random_seed
         if self.random_seed:
             np.random.seed(self.random_seed)
@@ -171,7 +171,7 @@ class TrainingGenerator(Sequence):
         # indices for validation set in sample_index
         self.index = np.arange(self.n_samples)
         self.n_validation = int(self.validation_split * self.n_samples)
-        if self.n_validation is 0:
+        if self.n_validation == 0:
             warnings.warn(
                 "`n_validation` is 0. Increase `validation_split` to use a validation set."
             )
@@ -221,12 +221,12 @@ class TrainingGenerator(Sequence):
         self.n_outputs = n_outputs
         self.batch_size = batch_size
         if validation:
-            if self.n_validation is 0 and self.validation_split is 0:
+            if self.n_validation == 0 and self.validation_split == 0:
                 warnings.warn(
                     "`validation_split` is 0, so there will be no validation step. "
                     "callbacks that rely on `val_loss` should be switched to `loss` or removed."
                 )
-            if self.n_validation is 0 and self.validation_split is not 0:
+            if self.n_validation == 0 and self.validation_split != 0:
                 warnings.warn(
                     "`validation_split` is too small, so there will be no validation step. "
                     "`validation_split` should be increased or "
@@ -304,7 +304,7 @@ class TrainingGenerator(Sequence):
             if self.use_graph:
                 y[..., self.n_keypoints :] *= self.graph_scale
         if self.n_outputs > 1:
-            y = [y for idx in range(self.n_outputs)]
+            y = (y,) * self.n_outputs
 
         return X, y
 

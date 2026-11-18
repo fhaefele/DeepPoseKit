@@ -13,13 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorflow.keras.utils import Sequence
+from keras.utils import PyDataset
 import numpy as np
 
 __all__ = ["BaseGenerator"]
 
 
-class BaseGenerator(Sequence):
+class BaseGenerator(PyDataset):
     """
     BaseGenerator class for abstracting data loading and saving.
     Attributes that should be defined before use:
@@ -41,6 +41,7 @@ class BaseGenerator(Sequence):
         they are set to a vector of -1 corresponding
         to keypoints shape
         """
+        super().__init__()
         if not hasattr(self, "graph"):
             self.graph = -np.ones(self.keypoints_shape[0])
         if not hasattr(self, "swap_index"):

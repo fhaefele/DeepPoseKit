@@ -21,10 +21,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
-import numpy as np
-from tensorflow.keras.layers import Layer
-from tensorflow.keras import backend
+from keras.applications.imagenet_utils import preprocess_input
+from keras.layers import Layer
+from keras.saving import register_keras_serializable
 
 from deepposekit.models.layers.imagenet_resnet import MODELS as RESNET_MODELS
 from deepposekit.models.layers.imagenet_mobile import MODELS as MOBILE_MODELS
@@ -34,92 +33,7 @@ from deepposekit.models.layers.imagenet_xception import MODELS as XCEPTION_MODEL
 from functools import partial
 
 
-def _preprocess_symbolic_input(x, data_format, mode, **kwargs):
-    """Preprocesses a tensor encoding a batch of images.
-    # Arguments
-        x: Input tensor, 3D or 4D.
-        data_format: Data format of the image tensor.
-        mode: One of "caffe", "tf" or "torch".
-            - caffe: will convert the images from RGB to BGR,
-                then will zero-center each color channel with
-                respect to the ImageNet dataset,
-                without scaling.
-            - tf: will scale pixels between -1 and 1,
-                sample-wise.
-            - torch: will scale pixels between 0 and 1 and then
-                will normalize each channel with respect to the
-                ImageNet dataset.
-    # Returns
-        Preprocessed tensor.
-    """
-
-    if mode == "tf":
-        x /= 127.5
-        x -= 1.0
-        return x
-
-    if mode == "torch":
-        x /= 255.0
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
-    else:
-        if data_format == "channels_first":
-            # 'RGB'->'BGR'
-            if backend.ndim(x) == 3:
-                x = x[::-1, ...]
-            else:
-                x = x[:, ::-1, ...]
-        else:
-            # 'RGB'->'BGR'
-            x = x[..., ::-1]
-        mean = [103.939, 116.779, 123.68]
-        std = None
-
-    mean_tensor = backend.constant(-np.array(mean))
-
-    # Zero-center by mean pixel
-    if backend.dtype(x) != backend.dtype(mean_tensor):
-        x = backend.bias_add(
-            x, backend.cast(mean_tensor, backend.dtype(x)), data_format=data_format
-        )
-    else:
-        x = backend.bias_add(x, mean_tensor, data_format)
-    if std is not None:
-        x /= std
-    return x
-
-
-def preprocess_input(x, data_format=None, mode="caffe", **kwargs):
-    """Preprocesses a tensor or Numpy array encoding a batch of images.
-    # Arguments
-        x: Input Numpy or symbolic tensor, 3D or 4D.
-            The preprocessed data is written over the input data
-            if the data types are compatible. To avoid this
-            behaviour, `numpy.copy(x)` can be used.
-        data_format: Data format of the image tensor/array.
-        mode: One of "caffe", "tf" or "torch".
-            - caffe: will convert the images from RGB to BGR,
-                then will zero-center each color channel with
-                respect to the ImageNet dataset,
-                without scaling.
-            - tf: will scale pixels between -1 and 1,
-                sample-wise.
-            - torch: will scale pixels between 0 and 1 and then
-                will normalize each channel with respect to the
-                ImageNet dataset.
-    # Returns
-        Preprocessed tensor or Numpy array.
-    # Raises
-        ValueError: In case of unknown `data_format` argument.
-    """
-
-    if data_format is None:
-        data_format = backend.image_data_format()
-    if data_format not in {"channels_first", "channels_last"}:
-        raise ValueError("Unknown data_format " + str(data_format))
-    return _preprocess_symbolic_input(x, data_format=data_format, mode=mode, **kwargs)
-
-
+@register_keras_serializable(package="deepposekit")
 class ImageNetPreprocess(Layer):
     """Preprocessing layer for ImageNet inputs.
     # Input shape
@@ -165,9 +79,8 @@ MODELS = dict(MODELS)
 
 if __name__ == "__main__":
 
-    from tensorflow.keras.applications.resnet50 import preprocess_input
-    from tensorflow.keras.layers import Input
-    from tensorflow.keras import Model
+    from keras import Input, Model
+    from keras.applications import ResNet50
 
     input_layer = Input((192, 192, 3))
     model = ResNet50(include_top=False, input_shape=(192, 192, 3))

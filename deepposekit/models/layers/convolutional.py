@@ -13,25 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorflow.keras.layers import Layer, InputSpec
-
-from tensorflow.keras.layers import UpSampling2D
+from keras.layers import InputSpec, Layer, UpSampling2D
+from keras.saving import register_keras_serializable
 
 from deepposekit.models.backend.backend import (
-    resize_images,
     find_maxima,
     depth_to_space,
     space_to_depth,
 )
 
-from tensorflow.python.keras.utils.conv_utils import (
-    normalize_data_format,
-    normalize_tuple,
-)
+from deepposekit.models.backend.utils import normalize_data_format
 
 __all__ = ["UpSampling2D", "Maxima2D", "SubPixelUpscaling", "SubPixelDownscaling"]
 
 
+@register_keras_serializable(package="deepposekit")
 class Maxima2D(Layer):
     """Maxima layer for 2D inputs.
     Finds the maxima and 2D indices
@@ -109,6 +105,7 @@ class Maxima2D(Layer):
         return dict(list(base_config.items()) + list(config.items()))
 
 
+@register_keras_serializable(package="deepposekit")
 class SubPixelUpscaling(Layer):
     """ Sub-pixel convolutional upscaling layer based on the paper "Real-Time Single Image
     and Video Super-Resolution Using an Efficient Sub-Pixel Convolutional Neural Network"
@@ -185,6 +182,7 @@ class SubPixelUpscaling(Layer):
         return dict(list(base_config.items()) + list(config.items()))
 
 
+@register_keras_serializable(package="deepposekit")
 class SubPixelDownscaling(Layer):
     """ Sub-pixel convolutional downscaling layer based on the paper "Real-Time Single Image
     and Video Super-Resolution Using an Efficient Sub-Pixel Convolutional Neural Network"

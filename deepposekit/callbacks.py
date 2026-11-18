@@ -16,10 +16,10 @@
 import numpy as np
 import h5py
 import json
+from os import fspath
 
-from tensorflow.keras.callbacks import Callback
-import tensorflow.keras.callbacks as callbacks
-from tensorflow.python.platform import tf_logging as logging
+from keras import callbacks
+from keras.callbacks import Callback
 
 from deepposekit.models.engine import BaseModel
 from deepposekit.utils.io import get_json_type
@@ -113,10 +113,10 @@ class Logger(Callback):
         euclidean = evaluation_dict["euclidean"]
         confidence = evaluation_dict["confidence"]
         if self.filepath is not None:
-            with h5py.File(self.filepath) as h5file:
+            with h5py.File(self.filepath, "r+") as h5file:
                 values = {
-                    "val_loss": np.array([logs.get("val_loss")]).reshape(1),
-                    "loss": np.array([logs.get("loss")]).reshape(1),
+                    "val_loss": np.array([logs.get("val_loss", np.nan)]).reshape(1),
+                    "loss": np.array([logs.get("loss", np.nan)]).reshape(1),
                     "y_pred": y_pred[None, ...],
                     "y_error": y_error[None, ...],
                     "euclidean": euclidean[None, ...],
@@ -124,19 +124,14 @@ class Logger(Callback):
                 }
                 for key, value in values.items():
                     data = h5file["logs"][key]
-                    value = np.array(value)
-                    data.resize(tuple(value.shape))
-                    if data.shape[0] == 0:
-                        data[:] = value
-                    else:
-                        data.resize(data.shape[0] + 1, axis=0)
-                        data[-1] = value
+                    data.resize((data.shape[0] + 1, *value.shape[1:]))
+                    data[-1] = value[0]
 
         euclidean = euclidean.flatten()
         confidence = confidence.flatten()
 
-        if self.confidence_threshold:
-            mask = confidence >= confidence_threshold
+        if self.confidence_threshold is not None:
+            mask = confidence >= self.confidence_threshold
             euclidean = euclidean[mask]
             confidence = confidence[mask]
 
@@ -247,8 +242,13 @@ class ModelCheckpoint(callbacks.ModelCheckpoint):
         save_freq="epoch",
         **kwargs
     ):
-        super(ModelCheckpoint, self).__init__(
-            filepath=filepath,
+        filepath = fspath(filepath)
+        # Keras validates the extension up front; DeepPoseKit saves both HDF5 suffixes.
+        keras_filepath = filepath
+        if filepath.endswith(".hdf5") and not kwargs.get("save_weights_only"):
+            keras_filepath = filepath[:-5] + ".h5"
+        super().__init__(
+            filepath=keras_filepath,
             monitor=monitor,
             verbose=verbose,
             save_best_only=save_best_only,
@@ -256,10 +256,11 @@ class ModelCheckpoint(callbacks.ModelCheckpoint):
             save_freq=save_freq,
             **kwargs
         )
+        self.filepath = filepath
 
     def pass_model(self, model):
         if isinstance(model, BaseModel):
-            self.model = model
+            super().set_model(model)
         else:
             raise TypeError("model must be a deepposekit BaseModel class")
 

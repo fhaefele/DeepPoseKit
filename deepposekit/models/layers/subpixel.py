@@ -15,10 +15,13 @@
 
 from deepposekit.models.backend.backend import find_subpixel_maxima
 
-from tensorflow.keras.layers import Layer, InputSpec
-from tensorflow.python.keras.utils.conv_utils import normalize_data_format
+from keras.layers import InputSpec, Layer
+from keras.saving import register_keras_serializable
+
+from deepposekit.models.backend.utils import normalize_data_format
 
 
+@register_keras_serializable(package="deepposekit")
 class SubpixelMaxima2D(Layer):
     """Subpixel maxima layer for 2D inputs.
     Convolves a 2D Gaussian kernel to find

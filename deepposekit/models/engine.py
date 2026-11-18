@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
-from tensorflow.keras import Model
-from tensorflow.keras.layers import Input
 import warnings
+
+import numpy as np
+from keras import Model
+from keras.layers import Input
 
 from deepposekit.models.layers.subpixel import SubpixelMaxima2D
 from deepposekit.models.layers.convolutional import Maxima2D
@@ -57,6 +58,7 @@ class BaseModel:
     def __init_train_model__(self):
         if isinstance(self.train_model, Model):
             self.compile = self.train_model.compile
+            self.save_weights = self.train_model.save_weights
             self.n_outputs = len(self.train_model.outputs)
         else:
             raise TypeError("self.train_model must be keras.Model class")
@@ -98,18 +100,14 @@ class BaseModel:
             )(outputs)
         self.predict_model = Model(self.inputs, keypoints, name=self.train_model.name)
         self.predict = self.predict_model.predict
-        self.predict_generator = self.predict_model.predict_generator
+        self.predict_generator = self.predict_model.predict
         self.predict_on_batch = self.predict_model.predict_on_batch
-
-        # Fix for passing model to callbacks.ModelCheckpoint
-        if hasattr(self.train_model, "_in_multi_worker_mode"):
-            self._in_multi_worker_mode = self.train_model._in_multi_worker_mode
 
     def fit(
         self,
         batch_size,
         validation_batch_size=1,
-        callbacks=[],
+        callbacks=None,
         epochs=1,
         use_multiprocessing=False,
         n_workers=1,
@@ -140,7 +138,9 @@ class BaseModel:
             based on the size of the dataset.
         """
 
-        if not self.train_model._is_compiled:
+        if self.train_generator is None:
+            raise ValueError("A training generator is required to fit the model")
+        if not self.train_model.compiled:
             warnings.warn(
                 """\nAutomatically compiling with default settings: model.compile('adam', 'mse')\n"""
                 "Call model.compile() manually to use non-default settings.\n"
@@ -161,15 +161,18 @@ class BaseModel:
                 "No validation set detected, so validation step will not be run and `val_loss` will not be available."
             )
 
-        activated_callbacks = self.activate_callbacks(callbacks)
+        max_queue_size = kwargs.pop("max_queue_size", 10)
+        for dataset in (train_generator, validation_generator):
+            if dataset is not None:
+                dataset.workers = n_workers
+                dataset.use_multiprocessing = use_multiprocessing
+                dataset.max_queue_size = max_queue_size
 
-        self.train_model.fit_generator(
-            generator=train_generator,
+        return self.train_model.fit(
+            train_generator,
             steps_per_epoch=steps_per_epoch,
             epochs=epochs,
-            use_multiprocessing=use_multiprocessing,
-            workers=n_workers,
-            callbacks=activated_callbacks,
+            callbacks=self.activate_callbacks(callbacks),
             validation_data=validation_generator,
             **kwargs
         )
@@ -229,8 +232,12 @@ class BaseModel:
 
         return evaluation_dict
 
+    @property
+    def metrics(self):
+        return self.train_model.metrics
+
     def save(self, path, overwrite=True):
-        save_model(self, path)
+        return save_model(self, path, overwrite=overwrite)
 
     def get_config(self):
         config = {}

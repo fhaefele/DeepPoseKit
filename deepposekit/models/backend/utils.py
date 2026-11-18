@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import tensorflow as tf
+from keras.config import image_data_format
 import numpy as np
 
 __all__ = [
@@ -25,6 +26,13 @@ __all__ = [
     "gaussian_kernel_1d",
     "gaussian_kernel_2d",
 ]
+
+
+def normalize_data_format(data_format):
+    data_format = image_data_format() if data_format is None else str(data_format).lower()
+    if data_format not in {"channels_first", "channels_last"}:
+        raise ValueError(f"Unknown image data format: {data_format!r}")
+    return data_format
 
 
 def ndims(x):

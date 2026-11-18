@@ -14,8 +14,8 @@
 # limitations under the License.
 
 import numpy as np
-from tensorflow.keras import Input, Model
-from tensorflow.keras.layers import BatchNormalization
+from keras import Model
+from keras.layers import BatchNormalization
 
 import deepposekit.utils.image as image_utils
 from deepposekit.models.engine import BaseModel
@@ -41,6 +41,7 @@ class StackedDenseNet(BaseModel):
         compression_factor=0.5,
         pretrained=False,
         subpixel=True,
+        pretrained_weights="imagenet",
         **kwargs
     ):
         """
@@ -83,6 +84,9 @@ class StackedDenseNet(BaseModel):
             n_input_channels * compression_factor
         pretrained : bool, default = False
             Whether to use an encoder that is pretrained on ImageNet
+        pretrained_weights: str or None, default = "imagenet"
+            Initial weights for the pretrained encoder. Use None to construct
+            the same encoder without downloading weights before loading a checkpoint.
         subpixel: bool, default = True
             Whether to use subpixel maxima for calculating
             keypoint coordinates in the prediction model.
@@ -127,6 +131,7 @@ class StackedDenseNet(BaseModel):
         self.compression_factor = compression_factor
         self.n_transitions = n_transitions
         self.pretrained = pretrained
+        self.pretrained_weights = pretrained_weights
         super(StackedDenseNet, self).__init__(train_generator, subpixel, **kwargs)
 
     def __init_model__(self):
@@ -171,7 +176,7 @@ class StackedDenseNet(BaseModel):
                 " If `n_transitions` is -1 (the default), check that your image resolutions can be repeatedly downsampled (are divisible by 2 repeatedly)."
             )
         if self.pretrained:
-            if self.input_shape[-1] is 1:
+            if self.input_shape[-1] == 1:
                 inputs = Concatenate()([self.inputs] * 3)
                 input_shape = self.input_shape[:-1] + (3,)
             else:
@@ -182,6 +187,7 @@ class StackedDenseNet(BaseModel):
                 input_shape=input_shape,
                 n_downsample=self.train_generator.downsample_factor,
                 compression_factor=self.compression_factor,
+                weights=self.pretrained_weights,
             )(normalized)
         else:
             normalized = ImageNormalization()(self.inputs)
