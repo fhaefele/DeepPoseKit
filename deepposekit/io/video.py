@@ -21,7 +21,7 @@ import os
 __all__ = ["VideoReader", "VideoWriter"]
 
 
-class VideoReader(cv2.VideoCapture, PyDataset):
+class VideoReader(PyDataset):
 
     """Read a video in batches.
 
@@ -37,15 +37,14 @@ class VideoReader(cv2.VideoCapture, PyDataset):
 
     def __init__(self, videopath, batch_size=1, gray=False):
 
-        if isinstance(videopath, str):
-            if os.path.exists(videopath):
-                super(VideoReader, self).__init__(videopath)
-                self.videopath = videopath
-            else:
-                raise ValueError("file or path does not exist")
-        else:
+        if not isinstance(videopath, str):
             raise TypeError("videopath must be str")
-        PyDataset.__init__(self)
+        if not os.path.exists(videopath):
+            raise ValueError("file or path does not exist")
+        super().__init__()
+        self.videopath = videopath
+        # Keep OpenCV's native object outside the Python dataset inheritance chain.
+        self._capture = cv2.VideoCapture(videopath)
         self.batch_size = batch_size
         self.n_frames = int(self.get(cv2.CAP_PROP_FRAME_COUNT))
         self.idx = 0
@@ -54,7 +53,10 @@ class VideoReader(cv2.VideoCapture, PyDataset):
         self.width = int(self.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.finished = False
         self.gray = gray
-        self._read = super(VideoReader, self).read
+
+    def __getattr__(self, name):
+        # Preserve the VideoCapture methods previously exposed by inheritance.
+        return getattr(object.__getattribute__(self, "_capture"), name)
 
     def read(self):
         """ Read one frame
@@ -66,7 +68,7 @@ class VideoReader(cv2.VideoCapture, PyDataset):
             Otherwise, return None.
 
         """
-        ret, frame = self._read()
+        ret, frame = self._capture.read()
         if ret:
             self.idx += 1
             if self.gray:
@@ -146,9 +148,6 @@ class VideoReader(cv2.VideoCapture, PyDataset):
         if frames is None:
             raise StopIteration
         return frames
-
-    def __del__(self):
-        self.close()
 
     @property
     def current_frame(self):
