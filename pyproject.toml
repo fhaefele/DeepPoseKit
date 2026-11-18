@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepposekit"
+version = "0.3.9"
+description = "A toolkit for pose estimation using deep learning"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Jacob Graving", email = "jgraving@gmail.com" }]
+maintainers = [{ name = "Jacob Graving", email = "jgraving@gmail.com" }]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+    "h5py",
+    "imgaug==0.4.0",
+    "keras==3.15.1",
+    "matplotlib",
+    # imgaug 0.4.0 uses NumPy 1.x APIs; TensorFlow 2.21 requires at least 1.26.
+    "numpy>=1.26,<2",
+    # OpenCV wheels from 4.12 onward require NumPy 2 on Python 3.12.
+    "opencv-python<4.12",
+    "pandas",
+    "pyyaml",
+    "scikit-learn",
+    "tensorflow==2.21.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/jgraving/DeepPoseKit"
+
+[tool.setuptools.packages.find]
+include = ["deepposekit*"]
+namespaces = false
