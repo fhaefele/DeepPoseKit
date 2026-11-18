@@ -13,12 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorflow.keras.layers import Layer
-import tensorflow.keras.backend as K
+from keras.layers import Layer
+from keras.saving import register_keras_serializable
 
 __all__ = ["ImageNormalization"]
 
 
+@register_keras_serializable(package="deepposekit")
 class ImageNormalization(Layer):
     """Image normalization layer.
     Normalize the value range of image arrays from [0,255] to [-1,1],

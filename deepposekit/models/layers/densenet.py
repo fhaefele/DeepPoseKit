@@ -15,10 +15,7 @@
 
 import numpy as np
 
-from tensorflow.keras import layers
-
-from deepposekit.models.layers.convolutional import UpSampling2D
-from deepposekit.models.layers.util import ImageNormalization
+from keras import layers
 from deepposekit.models.layers.convolutional import (
     SubPixelDownscaling,
     SubPixelUpscaling,
@@ -297,9 +294,10 @@ class FrontEnd:  # (layers.Layer):
 
 
 class ImageNetFrontEnd:  # (layers.Layer):
-    def __init__(self, input_shape, n_downsample=1, compression_factor=0.5, **kwargs):
+    def __init__(self, input_shape, n_downsample=1, compression_factor=0.5, weights="imagenet"):
         # super(FrontEnd, self).__init__(self, **kwargs)
         self.input_shape = input_shape
+        self.weights = weights
         self.compression_factor = compression_factor
         self.n_downsample = n_downsample
         if n_downsample > 3:
@@ -307,7 +305,7 @@ class ImageNetFrontEnd:  # (layers.Layer):
 
     def call(self, inputs):
         pretrained_model = DenseNet121(
-            input_shape=self.input_shape, residuals=self.n_downsample
+            input_shape=self.input_shape, residuals=self.n_downsample, weights=self.weights
         )
         outputs = pretrained_model(inputs)
         outputs = layers.BatchNormalization()(outputs)

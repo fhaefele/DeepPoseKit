@@ -13,12 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import tensorflow.keras.backend as K
-from tensorflow.keras.backend import int_shape, permute_dimensions, dtype, floatx
 import tensorflow as tf
-import numpy as np
+from keras.config import floatx
 
-from deepposekit.models.backend.utils import gaussian_kernel_2d
+from deepposekit.models.backend.utils import gaussian_kernel_2d, normalize_data_format
 from deepposekit.models.backend.registration import _upsampled_registration
 
 __all__ = [
@@ -44,22 +42,22 @@ def resize_images(x, height_factor, width_factor, interpolation, data_format):
         ValueError: if `data_format` is neither `"channels_last"` or `"channels_first"`.
     """
     if interpolation == "nearest":
-        tf_resize = tf.image.resize_nearest_neighbor
+        tf_resize = tf.compat.v1.image.resize_nearest_neighbor
     elif interpolation == "bilinear":
-        tf_resize = tf.image.resize_bilinear
+        tf_resize = tf.compat.v1.image.resize_bilinear
     elif interpolation == "bicubic":
-        tf_resize = tf.image.resize_bicubic
+        tf_resize = tf.compat.v1.image.resize_bicubic
     else:
         raise ValueError("Invalid interpolation method:", interpolation)
     if data_format == "channels_first":
-        original_shape = int_shape(x)
+        original_shape = x.shape
         new_shape = tf.shape(x)[2:]
         new_shape *= tf.constant(
-            np.array([height_factor, width_factor]).astype("int32")
+            [height_factor, width_factor], dtype=tf.int32
         )
-        x = permute_dimensions(x, [0, 2, 3, 1])
+        x = tf.transpose(x, [0, 2, 3, 1])
         x = tf_resize(x, new_shape, align_corners=True)
-        x = permute_dimensions(x, [0, 3, 1, 2])
+        x = tf.transpose(x, [0, 3, 1, 2])
         x.set_shape(
             (
                 None,
@@ -74,10 +72,10 @@ def resize_images(x, height_factor, width_factor, interpolation, data_format):
         )
         return x
     elif data_format == "channels_last":
-        original_shape = int_shape(x)
+        original_shape = x.shape
         new_shape = tf.shape(x)[1:3]
         new_shape *= tf.constant(
-            np.array([height_factor, width_factor]).astype("int32")
+            [height_factor, width_factor], dtype=tf.int32
         )
         x = tf_resize(x, new_shape, align_corners=True)
         x.set_shape(
@@ -99,20 +97,20 @@ def resize_images(x, height_factor, width_factor, interpolation, data_format):
 
 def _find_maxima(x, coordinate_scale=1, confidence_scale=255.0):
 
-    x = K.cast(x, K.floatx())
+    x = tf.cast(x, floatx())
 
-    col_max = K.max(x, axis=1)
-    row_max = K.max(x, axis=2)
+    col_max = tf.reduce_max(x, axis=1)
+    row_max = tf.reduce_max(x, axis=2)
 
-    maxima = K.max(col_max, 1)
-    maxima = K.expand_dims(maxima, -2) / confidence_scale
+    maxima = tf.reduce_max(col_max, 1)
+    maxima = tf.expand_dims(maxima, -2) / confidence_scale
 
-    cols = K.cast(K.argmax(col_max, -2), K.floatx())
-    rows = K.cast(K.argmax(row_max, -2), K.floatx())
-    cols = K.expand_dims(cols, -2) * coordinate_scale
-    rows = K.expand_dims(rows, -2) * coordinate_scale
+    cols = tf.cast(tf.argmax(col_max, -2), floatx())
+    rows = tf.cast(tf.argmax(row_max, -2), floatx())
+    cols = tf.expand_dims(cols, -2) * coordinate_scale
+    rows = tf.expand_dims(rows, -2) * coordinate_scale
 
-    maxima = K.concatenate([cols, rows, maxima], -2)
+    maxima = tf.concat([cols, rows, maxima], -2)
 
     return maxima
 
@@ -128,13 +126,13 @@ def find_maxima(x, coordinate_scale=1, confidence_scale=255.0, data_format=None)
         ValueError: if `data_format` is neither `"channels_last"` or `"channels_first"`.
     """
     if data_format == "channels_first":
-        x = permute_dimensions(x, [0, 2, 3, 1])
+        x = tf.transpose(x, [0, 2, 3, 1])
         x = _find_maxima(x, coordinate_scale, confidence_scale)
-        x = permute_dimensions(x, [0, 2, 1])
+        x = tf.transpose(x, [0, 2, 1])
         return x
     elif data_format == "channels_last":
         x = _find_maxima(x, coordinate_scale, confidence_scale)
-        x = permute_dimensions(x, [0, 2, 1])
+        x = tf.transpose(x, [0, 2, 1])
         return x
     else:
         raise ValueError("Invalid data_format:", data_format)
@@ -192,31 +190,31 @@ def find_subpixel_maxima(
         ValueError: if `data_format` is neither `"channels_last"` or `"channels_first"`.
     """
     if data_format == "channels_first":
-        x = permute_dimensions(x, [0, 2, 3, 1])
-        x_shape = K.shape(x)
+        x = tf.transpose(x, [0, 2, 3, 1])
+        x_shape = tf.shape(x)
         batch = x_shape[0]
         row = x_shape[1]
         col = x_shape[2]
         channels = x_shape[3]
-        x = permute_dimensions(x, [0, 3, 1, 2])
-        x = K.reshape(x, [batch * channels, row, col])
+        x = tf.transpose(x, [0, 3, 1, 2])
+        x = tf.reshape(x, [batch * channels, row, col])
         x = _find_subpixel_maxima(
             x, kernel_size, sigma, upsample_factor, coordinate_scale, confidence_scale
         )
-        x = K.reshape(x, [batch, channels, 3])
+        x = tf.reshape(x, [batch, channels, 3])
         return x
     elif data_format == "channels_last":
-        x_shape = K.shape(x)
+        x_shape = tf.shape(x)
         batch = x_shape[0]
         row = x_shape[1]
         col = x_shape[2]
         channels = x_shape[3]
-        x = permute_dimensions(x, [0, 3, 1, 2])
-        x = K.reshape(x, [batch * channels, row, col])
+        x = tf.transpose(x, [0, 3, 1, 2])
+        x = tf.reshape(x, [batch * channels, row, col])
         x = _find_subpixel_maxima(
             x, kernel_size, sigma, upsample_factor, coordinate_scale, confidence_scale
         )
-        x = K.reshape(x, [batch, channels, 3])
+        x = tf.reshape(x, [batch, channels, 3])
 
         return x
     else:
@@ -231,7 +229,7 @@ def _preprocess_conv2d_input(x, data_format):
     # Returns
         A tensor.
     """
-    if dtype(x) == "float64":
+    if x.dtype == tf.float64:
         x = tf.cast(x, "float32")
     if data_format == "channels_first":
         # TF uses the last dimension as channel dimension,
@@ -262,9 +260,7 @@ def _postprocess_conv2d_output(x, data_format):
 def depth_to_space(input, scale, data_format=None):
     """ Uses phase shift algorithm to convert
     channels/depth to spatial resolution """
-    if data_format is None:
-        data_format = K.image_data_format()
-    data_format = data_format.lower()
+    data_format = normalize_data_format(data_format)
     input = _preprocess_conv2d_input(input, data_format)
     out = tf.nn.depth_to_space(input, scale)
     out = _postprocess_conv2d_output(out, data_format)
@@ -274,9 +270,7 @@ def depth_to_space(input, scale, data_format=None):
 def space_to_depth(input, scale, data_format=None):
     """ Uses phase shift algorithm to convert
     spatial resolution to channels/depth """
-    if data_format is None:
-        data_format = K.image_data_format()
-    data_format = data_format.lower()
+    data_format = normalize_data_format(data_format)
     input = _preprocess_conv2d_input(input, data_format)
     out = tf.nn.space_to_depth(input, scale)
     out = _postprocess_conv2d_output(out, data_format)

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorflow.keras.utils import Sequence
+from keras.utils import PyDataset
 import cv2
 import numpy as np
 import os
@@ -21,7 +21,7 @@ import os
 __all__ = ["VideoReader", "VideoWriter"]
 
 
-class VideoReader(cv2.VideoCapture, Sequence):
+class VideoReader(cv2.VideoCapture, PyDataset):
 
     """Read a video in batches.
 
@@ -45,6 +45,7 @@ class VideoReader(cv2.VideoCapture, Sequence):
                 raise ValueError("file or path does not exist")
         else:
             raise TypeError("videopath must be str")
+        PyDataset.__init__(self)
         self.batch_size = batch_size
         self.n_frames = int(self.get(cv2.CAP_PROP_FRAME_COUNT))
         self.idx = 0
@@ -122,23 +123,29 @@ class VideoReader(cv2.VideoCapture, Sequence):
 
     def __getitem__(self, index):
 
-        if self.finished:
-            raise StopIteration
-        if isinstance(index, (int, np.integer)):
-            idx0 = index * self.batch_size
-            if self.idx != idx0:
-                self.set(cv2.CAP_PROP_POS_FRAMES, index - 1)
-                self.idx = idx0
-            return self.read_batch(self.batch_size, True)
-        else:
-            raise NotImplementedError
+        if not isinstance(index, (int, np.integer)):
+            raise TypeError("Video batch index must be an integer")
+        if not 0 <= index < len(self):
+            raise IndexError(f"Video batch index out of range: {index}")
+        start = index * self.batch_size
+        if self.idx != start or self.finished:
+            if not self.set(cv2.CAP_PROP_POS_FRAMES, start):
+                raise OSError(f"Could not seek to frame {start} in {self.videopath}")
+            self.idx = start
+            self.finished = False
+        frames = self.read_batch(self.batch_size, asarray=True)
+        if frames is None:
+            raise OSError(f"Could not read frame {start} in {self.videopath}")
+        return frames
 
     def __next__(self):
 
         if self.finished:
             raise StopIteration
-        else:
-            return self.read_batch(self.batch_size, True)
+        frames = self.read_batch(self.batch_size, asarray=True)
+        if frames is None:
+            raise StopIteration
+        return frames
 
     def __del__(self):
         self.close()
