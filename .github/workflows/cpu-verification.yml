@@ -1,0 +1,58 @@
+name: CPU verification
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  stackeddensenet:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CUDA_VISIBLE_DEVICES: "-1"
+      DPK_LEGACY_REFERENCE_DIR: ${{ runner.temp }}/dpk-reference
+      MPLBACKEND: Agg
+      OMP_NUM_THREADS: "1"
+      TF_ENABLE_ONEDNN_OPTS: "0"
+      TF_NUM_INTEROP_THREADS: "1"
+      TF_NUM_INTRAOP_THREADS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.12.23"
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            tests/fixtures/capture_legacy_reference.py.lock
+      - name: Install system libraries for OpenCV
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libglib2.0-0t64
+      - name: Capture pinned legacy predictions and stage annotations
+        run: |
+          legacy_source="$RUNNER_TEMP/dpk-legacy"
+          git worktree add --detach "$legacy_source" cecdb0c8c364ea049a3b705275ae71a2f366d4da
+          uv run --locked --script tests/fixtures/capture_legacy_reference.py \
+            --source "$legacy_source" --output "$DPK_LEGACY_REFERENCE_DIR"
+          annotations="$DPK_LEGACY_REFERENCE_DIR/annotation_data_release.h5"
+          curl --fail --location --silent --show-error --retry 3 \
+            --output "$annotations" \
+            https://raw.githubusercontent.com/jgraving/DeepPoseKit-Data/0aa5e3f5e8f9df63c48ba2bf491354472daa3e7e/datasets/fly/annotation_data_release.h5
+          printf '%s  %s\n' '37eb6a44011bba317b6c6a9069e8c364737d8c27b0052ed1a3edeaf8bedeb5e8' "$annotations" |
+            sha256sum --check
+      - name: Sync the locked modern environment
+        run: uv sync --locked --python 3.12
+      - name: Run the CPU suite without network access
+        run: |
+          variables=HOME,UV_CACHE_DIR,UV_PYTHON_INSTALL_DIR,DPK_LEGACY_REFERENCE_DIR,CUDA_VISIBLE_DEVICES,MPLBACKEND,OMP_NUM_THREADS,TF_ENABLE_ONEDNN_OPTS,TF_NUM_INTEROP_THREADS,TF_NUM_INTRAOP_THREADS
+          sudo --preserve-env="$variables" unshare --net \
+            --setgid "$(id -g)" --setuid "$(id -u)" -- \
+            "$(command -v uv)" run --locked --offline python -X faulthandler -m unittest discover -s tests -v
