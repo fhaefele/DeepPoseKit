@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 import h5py
 import keras
 import numpy as np
+from backbone_test_utils import BackboneWorkflowMixin
 
 from deepposekit.io import TrainingGenerator
 from deepposekit.io.BaseGenerator import BaseGenerator
@@ -161,3 +162,7 @@ class DeepLabCutWorkflowTests(unittest.TestCase):
                     ValueError, "Duplicate legacy tensor identity"
                 ):
                     assign_legacy_weights(model, file)
+
+
+class DeepLabCutLegacyTests(BackboneWorkflowMixin, unittest.TestCase):
+    backbone_name = "DeepLabCut"

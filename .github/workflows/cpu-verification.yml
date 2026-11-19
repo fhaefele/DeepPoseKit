@@ -45,7 +45,7 @@ jobs:
             --source "$legacy_source" --output "$DPK_LEGACY_REFERENCE_DIR"
           uv run --locked --script tests/fixtures/capture_legacy_reference.py \
             --source "$legacy_source" --output "$DPK_LEGACY_REFERENCE_DIR" \
-            --backbones StackedHourglass LEAP
+            --backbones StackedHourglass LEAP DeepLabCut
           annotations="$DPK_LEGACY_REFERENCE_DIR/annotation_data_release.h5"
           curl --fail --location --silent --show-error --retry 3 \
             --output "$annotations" \
