@@ -13,14 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorflow.keras import Input, Model
-from tensorflow.keras.layers import Conv2DTranspose, Concatenate
-from deepposekit.models.layers.deeplabcut import ImageNetPreprocess, MODELS
-from deepposekit.models.layers.convolutional import SubPixelUpscaling
+from keras import Model
+from keras.layers import Concatenate, Conv2D, Conv2DTranspose
 
 from deepposekit.models.engine import BaseModel
-from functools import partial
-
+from deepposekit.models.layers.convolutional import SubPixelUpscaling
+from deepposekit.models.layers.deeplabcut import MODELS, ImageNetPreprocess
 
 __docstring__ = """
     Define a DeepLabCut model from Mathis et al., 2018 [1–4]
@@ -35,7 +33,7 @@ __docstring__ = """
     subpixel: bool, default = True
         Whether to use subpixel maxima for calculating
         keypoint coordinates in the prediction model.
-    weights: "imagnet" or None, default is "imagenet"
+    weights: "imagenet", a weights file path, or None, default is "imagenet"
         Which weights to use for initialization. "imagenet" uses
         weights pretrained on imagenet. None uses randomly initialized
         weights.
@@ -98,60 +96,41 @@ class DeepLabCut(BaseModel):
         self.weights = weights
         self.backbone = backbone
         self.alpha = alpha
-        super(DeepLabCut, self).__init__(train_generator, subpixel, **kwargs)
+        super().__init__(train_generator, subpixel, **kwargs)
 
     def __init_model__(self):
-
-        if self.input_shape[-1] is 1:
-            inputs = Concatenate()([self.inputs] * 3)
-        else:
-            inputs = self.inputs
-        if self.backbone in list(MODELS.keys()):
-            normalized = ImageNetPreprocess(self.backbone)(inputs)
-        else:
+        if not isinstance(self.backbone, str) or self.backbone not in MODELS:
             raise ValueError(
-                "backbone model {} is not supported. Must be one of {}".format(
-                    self.backbone, list(MODELS.keys())
-                )
+                f"Unsupported DeepLabCut backbone {self.backbone!r}. "
+                f"Choose one of {', '.join(MODELS)}."
             )
-        backbone = MODELS[self.backbone]
-        if self.backbone in list(MODELS.keys()):
-            input_shape = None  # self.input_shape[:-1] + (3,)
-        if self.backbone.startswith("mobile"):
-            input_shape = None
-            backbone = partial(backbone, alpha=self.alpha)
-        pretrained_model = backbone(
-            include_top=False, weights=self.weights, input_shape=input_shape
-        )
-        pretrained_features = pretrained_model(normalized)
-        if self.train_generator.downsample_factor is 4:
-            x = pretrained_features
-            x_out = Conv2D(self.train_generator.n_output_channels, (1, 1))(x)
-        elif self.train_generator.downsample_factor is 3:
-            x = pretrained_features
-            x_out = Conv2DTranspose(
-                self.train_generator.n_output_channels,
-                (3, 3),
-                strides=(2, 2),
-                padding="same",
-            )(x)
-        elif self.train_generator.downsample_factor is 2:
-            x = pretrained_features
-            x = SubPixelUpscaling()(x)
-            x_out = Conv2DTranspose(
-                self.train_generator.n_output_channels,
-                (3, 3),
-                strides=(2, 2),
-                padding="same",
-            )(x)
-        else:
+        downsample_factor = self.train_generator.downsample_factor
+        if downsample_factor not in (2, 3, 4):
             raise ValueError(
-                "`downsample_factor={}` is not supported for DeepLabCut. Adjust your TrainingGenerator".format(
-                    self.train_generator.downsample_factor
-                )
+                f"DeepLabCut does not support downsample_factor={downsample_factor}. "
+                "Use 2, 3, or 4 in the TrainingGenerator."
             )
 
-        self.train_model = Model(self.inputs, x_out, name=self.__class__.__name__)
+        inputs = self.inputs
+        if self.input_shape[-1] == 1:
+            inputs = Concatenate()([inputs] * 3)
+        normalized = ImageNetPreprocess(self.backbone)(inputs)
+        options = {"include_top": False, "weights": self.weights}
+        if self.backbone == "mobilenetv2":
+            options["alpha"] = self.alpha
+        features = MODELS[self.backbone](**options)(normalized)
+
+        channels = self.train_generator.n_output_channels
+        if downsample_factor == 4:
+            heatmaps = Conv2D(channels, (1, 1))(features)
+        else:
+            if downsample_factor == 2:
+                features = SubPixelUpscaling()(features)
+            heatmaps = Conv2DTranspose(
+                channels, (3, 3), strides=(2, 2), padding="same"
+            )(features)
+
+        self.train_model = Model(self.inputs, heatmaps, name=self.__class__.__name__)
 
     def get_config(self):
         config = {
@@ -159,7 +138,6 @@ class DeepLabCut(BaseModel):
             "subpixel": self.subpixel,
             "weights": self.weights,
             "backbone": self.backbone,
-            "alpha": self.alpha if self.backbone is "mobilenetv2" else None,
+            "alpha": self.alpha if self.backbone == "mobilenetv2" else None,
         }
-        base_config = super(DeepLabCut, self).get_config()
-        return dict(list(config.items()) + list(base_config.items()))
+        return {**config, **super().get_config()}
