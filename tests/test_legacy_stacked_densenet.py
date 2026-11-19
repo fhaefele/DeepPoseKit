@@ -123,6 +123,59 @@ class LegacyStackedDenseNetTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "metadata disagree"):
                 load_model(checkpoint, compile=False)
 
+    def test_decoder_metadata_controls_coordinate_scaling(self):
+        with TemporaryDirectory() as temporary:
+            checkpoint = Path(temporary) / "decoder.h5"
+            shutil.copyfile(self.full, checkpoint)
+            with h5py.File(checkpoint, "r+") as file:
+                pose = json.loads(file.attrs["pose_model_config"])
+                generator = json.loads(file.attrs["train_generator_config"])
+                pose["config"]["subpixel"] = False
+                file.attrs["pose_model_config"] = json.dumps(pose)
+
+            model = load_model(checkpoint, compile=False)
+            frames = self.frames[:1]
+            heatmaps = model.train_model.predict_on_batch(frames)[-1]
+            keypoints = heatmaps[..., : pose["config"]["keypoints_shape"][0]]
+            stride = 2 ** pose["config"]["downsample_factor"]
+            expected = np.stack(
+                (
+                    keypoints.max(axis=1).argmax(axis=1) * stride,
+                    keypoints.max(axis=2).argmax(axis=1) * stride,
+                    keypoints.max(axis=(1, 2)) / 255.0,
+                ),
+                axis=-1,
+            )
+            np.testing.assert_allclose(
+                model.predict_on_batch(frames), expected, rtol=0, atol=1e-6
+            )
+            modern = Path(temporary) / "integer-decoder.keras"
+            model.save(modern)
+            restored = load_model(modern, compile=False)
+            np.testing.assert_allclose(
+                restored.predict_on_batch(frames), expected, rtol=0, atol=1e-6
+            )
+
+            for value in (None, "false", 0):
+                with self.subTest(subpixel=value):
+                    if value is None:
+                        del pose["config"]["subpixel"]
+                    else:
+                        pose["config"]["subpixel"] = value
+                    with h5py.File(checkpoint, "r+") as file:
+                        file.attrs["pose_model_config"] = json.dumps(pose)
+                    with self.assertRaisesRegex(ValueError, "subpixel"):
+                        load_model(checkpoint, compile=False)
+
+            pose["config"]["subpixel"] = True
+            for metadata in (pose, generator):
+                metadata["config"]["downsample_factor"] -= 1
+            with h5py.File(checkpoint, "r+") as file:
+                file.attrs["pose_model_config"] = json.dumps(pose)
+                file.attrs["train_generator_config"] = json.dumps(generator)
+            with self.assertRaisesRegex(ValueError, "downsample_factor"):
+                load_model(checkpoint, compile=False)
+
     def _configured_model(self):
         # Exercise normal construction after the Keras global name counters advance.
         keras.layers.Conv2D(1, 1)
