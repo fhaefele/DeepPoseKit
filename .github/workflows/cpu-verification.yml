@@ -43,6 +43,9 @@ jobs:
           git worktree add --detach "$legacy_source" cecdb0c8c364ea049a3b705275ae71a2f366d4da
           uv run --locked --script tests/fixtures/capture_legacy_reference.py \
             --source "$legacy_source" --output "$DPK_LEGACY_REFERENCE_DIR"
+          uv run --locked --script tests/fixtures/capture_legacy_reference.py \
+            --source "$legacy_source" --output "$DPK_LEGACY_REFERENCE_DIR" \
+            --backbones StackedHourglass
           annotations="$DPK_LEGACY_REFERENCE_DIR/annotation_data_release.h5"
           curl --fail --location --silent --show-error --retry 3 \
             --output "$annotations" \
