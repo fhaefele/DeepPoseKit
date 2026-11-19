@@ -5,6 +5,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 import json
 import os
 from pathlib import Path
+import re
 from shutil import copyfileobj
 import sys
 from tempfile import TemporaryDirectory, TemporaryFile
@@ -27,18 +28,26 @@ def input_file(path):
     return path
 
 
-def output_file(path, suffix, overwrite, *inputs):
-    path = Path(path)
+def _check_output_file(path, suffix, overwrite, protected):
     if path.suffix != suffix:
         raise ValueError(f"Output must end in {suffix}: {path}")
-    if not path.parent.is_dir() or path.is_dir():
-        raise ValueError(f"Output needs an existing parent directory: {path}")
-    if any(path.resolve() == Path(source).resolve() for source in inputs):
+    if path.is_dir():
+        raise ValueError(f"Output needs to be a file: {path}")
+    if path.resolve() in protected:
         raise ValueError(f"Output would replace an input: {path}")
     if os.path.lexists(path) and not overwrite:
         raise FileExistsError(
             f"Output already exists: {path}. Use --overwrite to replace it."
         )
+
+
+def output_file(path, suffix, overwrite, *inputs):
+    path = Path(path)
+    _check_output_file(
+        path, suffix, overwrite, {Path(source).resolve() for source in inputs}
+    )
+    if not path.parent.is_dir():
+        raise ValueError(f"Output needs an existing parent directory: {path}")
     return path
 
 
@@ -143,12 +152,11 @@ def video_batches(reader, batch_size):
 
 
 @contextmanager
-def prediction_reader(args):
-    if args.custom_reader is None:
-        with open_video(args.input, args.batch_size, args.gray) as reader:
-            yield video_batches(reader, args.batch_size)
+def custom_reader_module(path):
+    if path is None:
+        yield None
         return
-    path = input_file(args.custom_reader)
+    path = input_file(path)
     if path.suffix != ".py":
         raise ValueError("A custom reader must be a Python file (.py)")
     name = f"_deepposekit_reader_{uuid4().hex}"
@@ -159,25 +167,182 @@ def prediction_reader(args):
     sys.modules[name] = module
     try:
         spec.loader.exec_module(module)
-        factory = getattr(module, "create_reader", None)
-        if not callable(factory):
+        if not callable(getattr(module, "create_reader", None)):
             raise ValueError(
                 "Custom reader must define create_reader(path, *, batch_size, argv)"
             )
-        reader = factory(
-            args.input, batch_size=args.batch_size, argv=args.custom_reader_args or []
-        )
-        with ExitStack() as cleanup:
-            close_reader = getattr(reader, "close", None)
-            if callable(close_reader):
-                cleanup.callback(close_reader)
-            batches = iter(reader)
-            close_batches = getattr(batches, "close", None)
-            if batches is not reader and callable(close_batches):
-                cleanup.callback(close_batches)
-            yield batches
+        yield module
     finally:
         sys.modules.pop(name, None)
+
+
+def _prediction_streams(module, argv):
+    if module is None:
+        return {None: None}
+    plan = getattr(module, "prediction_streams", None)
+    if plan is None:
+
+        def open_recording(path, *, batch_size):
+            return module.create_reader(path, batch_size=batch_size, argv=list(argv))
+
+        return {None: open_recording}
+    streams = plan(list(argv))
+    if (
+        not isinstance(streams, dict)
+        or not streams
+        or not all(
+            isinstance(name, str) and callable(opener)
+            for name, opener in streams.items()
+        )
+    ):
+        raise ValueError("prediction_streams(argv) must return named reader factories")
+    return streams
+
+
+@contextmanager
+def prediction_reader(args, path, opener):
+    if opener is None:
+        with open_video(path, args.batch_size, args.gray) as reader:
+            yield video_batches(reader, args.batch_size)
+        return
+    reader = opener(path, batch_size=args.batch_size)
+    with ExitStack() as cleanup:
+        close_reader = getattr(reader, "close", None)
+        if callable(close_reader):
+            cleanup.callback(close_reader)
+        batches = iter(reader)
+        close_batches = getattr(batches, "close", None)
+        if batches is not reader and callable(close_batches):
+            cleanup.callback(close_batches)
+        yield batches
+
+
+VIDEO_EXTENSIONS = frozenset(
+    ".avi .mp4 .mov .mkv .webm .mpeg .mpg .m4v .wmv .mts .m2ts .ts .asf .flv .ogv .3gp".split()
+)
+
+
+def _directory_extensions(module):
+    if module is None:
+        return VIDEO_EXTENSIONS
+    extensions = getattr(module, "INPUT_EXTENSIONS", None)
+    if extensions is None:
+        return None
+    if (
+        not isinstance(extensions, (list, tuple, set, frozenset))
+        or not all(
+            isinstance(suffix, str) and re.fullmatch(r"\.[A-Za-z0-9]+", suffix)
+            for suffix in extensions
+        )
+        or not extensions
+    ):
+        raise ValueError("INPUT_EXTENSIONS must contain file extensions such as '.h5'")
+    return {suffix.lower() for suffix in extensions}
+
+
+def _raise_scan_error(error):
+    raise error
+
+
+def _scan_recordings(root, output_root, recursive, extensions, protected):
+    for directory, subdirs, filenames in root.walk(on_error=_raise_scan_error):
+        subdirs[:] = (
+            sorted(
+                name for name in subdirs if (directory / name).resolve() != output_root
+            )
+            if recursive
+            else []
+        )
+        for name in sorted(filenames):
+            path = directory / name
+            if (
+                (extensions is None or path.suffix.lower() in extensions)
+                and path.is_file()
+                and path.resolve() not in protected
+            ):
+                yield path, path.relative_to(root)
+
+
+def _prediction_jobs(args, module, streams):
+    protected = {args.checkpoint.resolve()}
+    if args.custom_reader is not None:
+        protected.add(args.custom_reader.resolve())
+    if args.output_dir is None:
+        if len(streams) != 1:
+            raise ValueError("Use --output-dir when predicting multiple reader streams")
+        source, destination = args.paths
+        if source.is_dir():
+            raise ValueError("Use --output-dir when predicting a directory")
+        output_file(destination, ".npy", args.overwrite, source, *protected)
+        name, opener = next(iter(streams.items()))
+        return [(source, destination, name, opener)]
+
+    output_root = args.output_dir.resolve()
+    sources = []
+    for path in args.paths:
+        if path.is_dir():
+            found = list(
+                _scan_recordings(
+                    path,
+                    output_root,
+                    args.recursive,
+                    _directory_extensions(module),
+                    protected,
+                )
+            )
+            if not found:
+                raise ValueError(f"No matching recordings in {path}")
+            sources.extend(found)
+        else:
+            sources.append((input_file(path), Path(path.name)))
+
+    protected.update(source.resolve() for source, _ in sources)
+    for name in streams:
+        if name is not None and (
+            not name
+            or name.endswith((".", " "))
+            or re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
+        ):
+            raise ValueError(
+                f"Reader stream name cannot be used in a filename: {name!r}"
+            )
+
+    jobs = []
+    destinations = {}
+    for source, relative in sources:
+        for name, opener in streams.items():
+            filename = (
+                f"{relative.stem}.{name}.npy"
+                if name is not None
+                else f"{relative.stem}.npy"
+            )
+            destination = args.output_dir / relative.with_name(filename)
+            parent = destination.parent.resolve()
+            if not parent.is_relative_to(output_root):
+                raise ValueError(
+                    f"Output parent points outside --output-dir: {destination.parent}"
+                )
+            for ancestor in (destination.parent, *destination.parent.parents):
+                if ancestor.is_dir():
+                    break
+                if os.path.lexists(ancestor):
+                    raise ValueError(f"Output parent is not a directory: {ancestor}")
+            key = os.path.normcase(parent / filename)
+            if key in destinations:
+                raise ValueError(
+                    f"Output collision for {destinations[key]} and {source}: {destination}"
+                )
+            _check_output_file(destination, ".npy", args.overwrite, protected)
+            destinations[key] = source
+            jobs.append((source, destination, name, opener))
+    for _, destination, _, _ in jobs:
+        parent = destination.parent.resolve()
+        for ancestor in (parent, *parent.parents):
+            if os.path.normcase(ancestor) in destinations:
+                raise ValueError(
+                    f"Output path is also needed as a directory: {ancestor}"
+                )
+    return jobs
 
 
 def predict_batch(model, frames, number, batch_size):
@@ -196,17 +361,14 @@ def predict_batch(model, frames, number, batch_size):
     return np.asarray(model.predict_on_batch(frames), dtype=np.float32)
 
 
-def predict(args):
-    inputs = [args.checkpoint, args.input]
-    if args.custom_reader is not None:
-        inputs.append(args.custom_reader)
-    output = output_file(args.output, ".npy", args.overwrite, *inputs)
+def _predict_recording(args, source, output, opener, model):
     count = 0
     result_shape = None
     with TemporaryFile(dir=output.parent) as spool:
-        with prediction_reader(args) as batches:
-            input_file(args.input)
-            model = load_model(args.checkpoint, compile=False)
+        with prediction_reader(args, source, opener) as batches:
+            input_file(source)
+            if model is None:
+                model = load_model(args.checkpoint, compile=False)
             for number, frames in enumerate(batches, 1):
                 predicted = predict_batch(model, frames, number, args.batch_size)
                 if (
@@ -238,7 +400,24 @@ def predict(args):
                 )
                 spool.seek(0)
                 copyfileobj(spool, result)
-    print(output)
+    return model
+
+
+def predict(args):
+    model = None
+    with custom_reader_module(args.custom_reader) as module:
+        streams = _prediction_streams(module, args.custom_reader_args or [])
+        for source, output, name, opener in _prediction_jobs(args, module, streams):
+            if args.output_dir is not None:
+                output.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                model = _predict_recording(args, source, output, opener, model)
+            except Exception as error:
+                if args.output_dir is None:
+                    raise
+                label = str(source) if name is None else f"{source} ({name})"
+                raise RuntimeError(f"{label}: {error}") from error
+            print(output)
 
 
 def convert(args):

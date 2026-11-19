@@ -229,6 +229,167 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(report["frames"], 5)
         self.assertEqual(len(report["per_keypoint_mean_px"]), 2)
 
+    def test_predict_explicit_files_with_one_model_load(self):
+        other = self.path / "other recording.avi"
+        other.write_bytes(self.video.read_bytes())
+        output = self.path / "explicit-predictions"
+        with patch(
+            "deepposekit.cli.operations.load_model", return_value=self.model
+        ) as load:
+            status, stdout, errors = invoke(
+                "predict",
+                self.checkpoint,
+                self.video,
+                "--gray",
+                other,
+                "--batch-size",
+                2,
+                "--output-dir",
+                output,
+            )
+        self.assertEqual(status, 0, errors)
+        load.assert_called_once_with(self.checkpoint, compile=False)
+        outputs = [output / "frames.npy", output / "other recording.npy"]
+        self.assertEqual(stdout.splitlines(), list(map(str, outputs)))
+        expected = self.model.predict(self.images, batch_size=2, verbose=0)
+        for path in outputs:
+            np.testing.assert_allclose(np.load(path), expected, rtol=1e-6, atol=1e-6)
+
+    def test_predict_directory_filters_and_preserves_relative_paths(self):
+        root = self.path / "recordings"
+        nested = root / "session"
+        nested.mkdir(parents=True)
+        (root / "rec.avi").write_bytes(self.video.read_bytes())
+        (nested / "rec.AVI").write_bytes(self.video.read_bytes())
+        (root / "notes.txt").write_text("not a video")
+        shallow = self.path / "shallow"
+        recursive = root / "outputs"
+        recursive.mkdir()
+        (recursive / "previous.avi").write_text("ignored output subtree")
+        with patch(
+            "deepposekit.cli.operations.load_model", return_value=self.model
+        ) as load:
+            status, _, errors = invoke(
+                "predict",
+                self.checkpoint,
+                root,
+                "--gray",
+                "--output-dir",
+                shallow,
+            )
+            self.assertEqual(status, 0, errors)
+            self.assertEqual(
+                sorted(path.name for path in shallow.iterdir()), ["rec.npy"]
+            )
+            status, _, errors = invoke(
+                "predict",
+                self.checkpoint,
+                root,
+                "--gray",
+                "--recursive",
+                "--output-dir",
+                recursive,
+            )
+            self.assertEqual(status, 0, errors)
+            self.assertEqual(load.call_count, 2)
+        self.assertEqual(
+            {
+                path.relative_to(recursive).as_posix()
+                for path in recursive.rglob("*.npy")
+            },
+            {"rec.npy", "session/rec.npy"},
+        )
+
+    def test_batch_preflight_rejects_conflicts_before_writing(self):
+        root = self.path / "conflicting-input"
+        root.mkdir()
+        source = root / "sample.avi"
+        source.touch()
+        duplicate = root / "sample.mkv"
+        duplicate.touch()
+        output = self.path / "conflicting-output"
+        with patch("deepposekit.cli.operations.load_model") as load:
+            status, _, errors = invoke(
+                "predict", self.checkpoint, root, "--output-dir", output, "--overwrite"
+            )
+            self.assertEqual(status, 1)
+            self.assertIn("Output collision", errors)
+            self.assertFalse(output.exists())
+
+            duplicate.unlink()
+            nested = root / "sample.npy"
+            nested.mkdir()
+            (nested / "recording.avi").touch()
+            status, _, errors = invoke(
+                "predict", self.checkpoint, root, "--recursive", "--output-dir", output
+            )
+            self.assertEqual(status, 1)
+            self.assertIn("needed as a directory", errors)
+            self.assertFalse(output.exists())
+
+            output.mkdir()
+            existing = output / "sample.npy"
+            existing.write_bytes(b"existing prediction")
+            status, _, errors = invoke(
+                "predict", self.checkpoint, root, "--output-dir", output
+            )
+            self.assertEqual(status, 1)
+            self.assertIn("--overwrite", errors)
+            self.assertEqual(existing.read_bytes(), b"existing prediction")
+            load.assert_not_called()
+
+    def test_custom_reader_batches_keep_arguments_and_completed_outputs(self):
+        root = self.path / "reader-input"
+        root.mkdir()
+        for name in ("a", "b"):
+            np.save(root / f"{name}.npy", self.images)
+        (root / "sidecar.txt").write_text("ignore")
+        fixture = self.path / "batch_reader.py"
+        fixture.write_text(
+            "import numpy as np\n"
+            'INPUT_EXTENSIONS = (".npy",)\n'
+            "def create_reader(path, *, batch_size, argv):\n"
+            '    assert argv == ["--", "--overwrite"]\n'
+            "    argv.pop()\n"
+            "    try:\n"
+            "        yield np.load(path)[:batch_size]\n"
+            '        if path.stem == "b":\n'
+            '            raise ValueError("unreadable second batch")\n'
+            "        yield np.load(path)[batch_size:]\n"
+            "    finally:\n"
+            '        path.with_suffix(".closed").touch()\n'
+        )
+        output = self.path / "reader-output"
+        output.mkdir()
+        prior = output / "b.npy"
+        prior.write_bytes(b"prior prediction")
+        with patch(
+            "deepposekit.cli.operations.load_model", return_value=self.model
+        ) as load:
+            status, stdout, errors = invoke(
+                "predict",
+                self.checkpoint,
+                root,
+                "--output-dir",
+                output,
+                "--batch-size",
+                3,
+                "--custom-reader",
+                fixture,
+                "--overwrite",
+                "--custom-reader-args",
+                "--",
+                "--overwrite",
+            )
+        self.assertEqual(status, 1)
+        self.assertIn("b.npy", errors)
+        self.assertIn("unreadable second batch", errors)
+        self.assertEqual(stdout.splitlines(), [str(output / "a.npy")])
+        self.assertEqual(np.load(output / "a.npy").shape, (5, 2, 3))
+        self.assertEqual(prior.read_bytes(), b"prior prediction")
+        self.assertTrue(all((root / f"{name}.closed").is_file() for name in ("a", "b")))
+        load.assert_called_once()
+
     def test_custom_reader_arguments_and_cleanup_after_failure(self):
         data = self.path / "input.npy"
         np.save(data, self.images)

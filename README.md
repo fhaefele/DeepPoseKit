@@ -179,8 +179,30 @@ requested batch size, and a list of every argument after
 `--custom-reader-args`. Put DeepPoseKit flags before that marker. Return an
 iterable of NumPy arrays shaped `(batch, height, width, channels)` in frame
 order, including the final short batch. DeepPoseKit closes the iterator and
-reader when they provide `close()` methods. Prediction takes one recording
-per invocation.
+reader when they provide `close()` methods.
+
+#### Predict on multiple recordings
+
+```bash
+deepposekit predict model.keras a.avi b.avi --output-dir predictions
+deepposekit predict model.keras recordings/ --output-dir predictions
+deepposekit predict model.keras recordings/ --recursive --output-dir predictions
+```
+
+A batch loads the checkpoint once and writes one `.npy` per recording. The
+CLI creates the output directory and preserves paths relative to each input
+directory. It scans common video extensions with the built-in reader. Add
+`--recursive` to include subfolders. Output collisions fail before prediction.
+If a recording fails during inference, previous completed outputs remain.
+
+Custom reader flags apply to every input. A reader may declare
+`INPUT_EXTENSIONS = (".h5", ".hdf5")` to filter directory scans. When a custom
+reader omits that setting, all regular input files are candidates. For
+recordings with several streams, a reader can also define
+`prediction_streams(argv)` and return a dictionary mapping output suffixes
+to factories that accept `(path, *, batch_size)`. Use `--output-dir` with
+multiple streams. For example, a stream named `Camera1` writes
+`recording.Camera1.npy`.
 
 ### Help, completion, and environment
 

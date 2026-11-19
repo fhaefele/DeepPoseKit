@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 import argcomplete
-from argcomplete.completers import FilesCompleter
+from argcomplete.completers import DirectoriesCompleter, FilesCompleter
 
 from deepposekit import __version__
 from deepposekit.cli.terminal import TerminalParser, color_mode
@@ -122,7 +122,7 @@ def make_parser(color="auto"):
     output_options(evaluate)
 
     predict = command(
-        "predict", "Model workflow", "Write keypoint predictions for a recording."
+        "predict", "Model workflow", "Write keypoint predictions for recordings."
     )
     _path(
         predict,
@@ -132,8 +132,23 @@ def make_parser(color="auto"):
         "keras",
         help="Full DeepPoseKit checkpoint.",
     )
-    _path(predict, "input", help="Input recording.")
-    _path(predict, "output", "npy", help="Output NumPy array.")
+    _path(
+        predict,
+        "paths",
+        nargs="+",
+        metavar="PATH",
+        help="Input followed by an output .npy, or one or more inputs with --output-dir.",
+    )
+    _path(
+        predict,
+        "--output-dir",
+        help="Write one .npy per recording and reader stream under this directory.",
+    ).completer = DirectoriesCompleter()
+    predict.add_argument(
+        "--recursive",
+        action="store_true",
+        help="Include subfolders of input directories.",
+    )
     predict.add_argument(
         "--gray", action="store_true", help="Read grayscale using the built-in reader."
     )
@@ -187,12 +202,17 @@ def main(argv=None):
     # argparse treats "--" specially even inside a REMAINDER. Parse only the
     # DeepPoseKit prefix so a reader receives all remaining arguments unchanged.
     end = argv.index("--") if "--" in argv else len(argv)
-    if READER_ARGS in argv[:end]:
-        index = argv.index(READER_ARGS)
-        args = parser.parse_args(argv[: index + 1])
+    index = argv.index(READER_ARGS) if READER_ARGS in argv[:end] else len(argv)
+    args, extra = parser.parse_known_args(argv[: index + 1])
+    # A variadic positional stops at the first option. Keep accepting input
+    # and output paths separated by flags, as in the original predict syntax.
+    if args.command == "predict" and all(not token.startswith("-") for token in extra):
+        args.paths.extend(map(Path, extra))
+        extra = []
+    if extra:
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
+    if index < len(argv):
         args.custom_reader_args = argv[index + 1 :]
-    else:
-        args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
         return 0
@@ -200,6 +220,10 @@ def main(argv=None):
         sys.stdout.write(argcomplete.shellcode(["deepposekit"], shell=args.shell))
         return 0
     if args.command == "predict":
+        if args.output_dir is None and (len(args.paths) != 2 or args.recursive):
+            parser.error(
+                "Specify an input and output .npy, or use --output-dir with input paths."
+            )
         if args.custom_reader_args is not None and args.custom_reader is None:
             parser.error("--custom-reader-args requires --custom-reader")
         if args.gray and args.custom_reader is not None:
