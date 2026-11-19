@@ -8,6 +8,7 @@ import h5py
 import keras
 import numpy as np
 import pandas as pd
+import tensorflow as tf
 
 from deepposekit import FlipAxis
 from deepposekit.io import (
@@ -18,6 +19,7 @@ from deepposekit.io import (
     initialize_dataset,
 )
 from deepposekit.models import StackedDenseNet, load_model
+from deepposekit.models.backend.utils import fftshift1d
 from deepposekit.utils.keypoints import graph_to_edges
 
 
@@ -31,6 +33,13 @@ def write_lossless_video(path, frames):
 
 
 class StackedDenseNetWorkflowTests(unittest.TestCase):
+    def test_subpixel_fftshift_compiles_for_odd_and_even_lengths(self):
+        compiled_shift = tf.function(fftshift1d, jit_compile=True)
+        for size in (4, 5):
+            with self.subTest(size=size):
+                values = np.arange(size, dtype=np.float32)
+                np.testing.assert_array_equal(compiled_shift(values), np.fft.fftshift(values))
+
     def test_skeleton_parent_graph_resolves_valid_roots_and_rejects_cycles(self):
         graph = np.array([2, 0, -1, 2, 1, -1], dtype=np.float64)
         np.testing.assert_array_equal(graph_to_edges(graph), [2, 2, 2, 2, 2, 5])

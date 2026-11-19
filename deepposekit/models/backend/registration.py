@@ -27,7 +27,7 @@ def _col_kernel(upsampled_region_size, upsample_factor, axis_offsets, data_shape
     col_constant = -1j * 2 * np.pi / col_constant
 
     col_kernel_a = tf.range(0, data_shape_float[2], dtype=tf.float32)
-    col_kernel_a = fftshift1d(col_kernel_a)  # TODO: replace with tf.signal.fftshift
+    col_kernel_a = fftshift1d(col_kernel_a)
     col_kernel_a = tf.reshape(col_kernel_a, (-1, 1))
     col_kernel_a -= tf.floor(data_shape_float[2] / 2.0)
     col_kernel_a = tf.reshape(col_kernel_a, (1, -1))
@@ -63,7 +63,7 @@ def _row_kernel(upsampled_region_size, upsample_factor, axis_offsets, data_shape
     row_kernel_a = row_kernel_a - axis_offsets[:, 0]
 
     row_kernel_b = tf.range(0, data_shape_float[1], dtype=tf.float32)
-    row_kernel_b = fftshift1d(row_kernel_b)  # TODO: replace with tf.signal.fftshift
+    row_kernel_b = fftshift1d(row_kernel_b)
     row_kernel_b = tf.reshape(row_kernel_b, (1, -1))
     row_kernel_b = tf.tile(row_kernel_b, (data_shape[0], 1))
     row_kernel_b = row_kernel_b - tf.floor(data_shape_float[1] / 2.0)
