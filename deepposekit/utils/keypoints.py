@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
 import cv2
 import imgaug as ia
+import numpy as np
 
 MACHINE_EPSILON = np.finfo(np.float64).eps
 
@@ -32,26 +32,37 @@ __all__ = [
 
 
 def graph_to_edges(graph):
+    """Resolve each keypoint to its component root in an annotation skeleton."""
+    parents = np.asarray(graph)
+    if (
+        parents.ndim != 1
+        or parents.dtype.kind not in "iuf"
+        or np.any((parents < -1) | (parents >= parents.size))
+        or not np.all(parents == np.trunc(parents))
+    ):
+        raise ValueError("Skeleton parents must be valid keypoint indices or -1 for a root")
+
+    roots = np.full(parents.size, -1, dtype=np.intp)
+    for keypoint in range(parents.size):
+        trail = set()
+        current = keypoint
+        while roots[current] == -1 and parents[current] != -1:
+            if current in trail:
+                raise ValueError(
+                    f"Skeleton parent graph contains a cycle at keypoint {current}. "
+                    "Each component needs a root with parent -1."
+                )
+            trail.add(current)
+            current = int(parents[current])
+        root = current if roots[current] == -1 else roots[current]
+        roots[current] = root
+        for node in trail:
+            roots[node] = root
+
     edges = graph.copy()
-    parents = set()
-    edge = {}
-    for idx in range(len(edges)):
-        if edges[idx] == -1:
-            parents.add(idx)
-        else:
-            edge[idx] = edges[idx]
-
-    for idx in range(len(edges)):
-        if idx in parents:
-            edges[idx] = idx
-        else:
-            idx0 = idx
-            while idx0 not in parents:
-                idx0 = edge[idx0]
-            edges[idx] = idx0
-
+    for keypoint, root in enumerate(roots):
+        edges[keypoint] = int(root)
     return edges
-
 
 def draw_graph(keypoints, height, width, output_shape, graph, sigma=1, linewidth=1):
     # One channel for each edge
