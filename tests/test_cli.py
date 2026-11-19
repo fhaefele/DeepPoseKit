@@ -485,6 +485,28 @@ class WorkflowTests(unittest.TestCase):
                 _callback_list(read_training_config(second), None, False, other)
         self.assertFalse(reserved.exists())
 
+    def test_backup_directory_stays_reserved_through_final_checkpoint_publication(self):
+        from deepposekit.cli.training import _callback_list, read_training_config
+
+        first = self.path / "backup-first.toml"
+        second = self.path / "backup-second.toml"
+        content = self.config.read_text().replace(
+            '"TerminateOnNaN"',
+            '{name="BackupAndRestore", backup_dir="reserved-backup"}',
+        )
+        first.write_text(content)
+        second.write_text(content.replace("model.keras", "second.keras"))
+        reserved = self.path / "reserved-backup"
+        with ExitStack() as resources:
+            (callback,) = _callback_list(
+                read_training_config(first), None, False, resources
+            )
+            callback.on_train_end()
+            self.assertTrue(reserved.is_dir())
+            with ExitStack() as other, self.assertRaises(FileExistsError):
+                _callback_list(read_training_config(second), None, False, other)
+        self.assertFalse(reserved.exists())
+
     def test_fine_tune_reuses_normalized_leap_constructor_options(self):
         config = self.path / "leap.toml"
         content = (

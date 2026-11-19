@@ -360,10 +360,10 @@ class _TrainingBackup(keras.callbacks.BackupAndRestore):
         self._written.update(written)
 
     def on_train_end(self, logs=None):
+        # The CLI reservation stays in place through final checkpoint publication.
         if self.delete_checkpoint:
             for path in self._written:
                 path.unlink(missing_ok=True)
-            _discard_empty_directory(Path(self.backup_dir))
 
 
 def _discard_empty_directory(path):
@@ -375,12 +375,11 @@ def _discard_empty_directory(path):
 
 
 def _discard_empty_file(path, created):
-    current = path.stat(follow_symlinks=False) if os.path.lexists(path) else None
-    if (
-        current is not None
-        and current.st_size == 0
-        and os.path.samestat(current, created)
-    ):
+    try:
+        current = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if current.st_size == 0 and os.path.samestat(current, created):
         path.unlink(missing_ok=True)
 
 
