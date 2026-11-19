@@ -68,9 +68,28 @@ def _read_metadata(values):
     return {field: read_config(values.get(field), field) for field in METADATA_FIELDS}
 
 
+def _legacy_checkpoint_layout(checkpoint):
+    if "model_weights" in checkpoint or any(
+        field in checkpoint.attrs for field in ("model_config", *METADATA_FIELDS)
+    ):
+        if "model_config" not in checkpoint.attrs:
+            raise ValueError("Missing model_config in full HDF5 checkpoint")
+        if not isinstance(checkpoint.get("model_weights"), h5py.Group):
+            raise ValueError(
+                "Missing or invalid model_weights group in full HDF5 checkpoint"
+            )
+        return "full"
+    if any(name in checkpoint.attrs for name in ("layer_names", "layer_names0")):
+        return "weights-only"
+    raise ValueError(
+        "Unsupported HDF5 checkpoint layout. Expected a DeepPoseKit checkpoint "
+        "or a legacy Keras weights file with root layer_names."
+    )
+
+
 def _load_legacy(path, custom_objects, compile_model):
     with h5py.File(path, "r") as checkpoint:
-        if "model_config" not in checkpoint.attrs or "model_weights" not in checkpoint:
+        if _legacy_checkpoint_layout(checkpoint) == "weights-only":
             raise ValueError(
                 "Expected a full DeepPoseKit checkpoint. For weights-only HDF5 use "
                 "load_legacy_weights with a matching StackedDenseNet model."
@@ -254,7 +273,7 @@ def load_legacy_weights(model, path):
             "Pass an initialized StackedDenseNet matching the legacy weights"
         )
     with h5py.File(path, "r") as checkpoint:
-        if "model_config" in checkpoint.attrs or "model_weights" in checkpoint:
+        if _legacy_checkpoint_layout(checkpoint) == "full":
             raise ValueError("Use load_model for full DeepPoseKit checkpoints")
         assign_legacy_weights(model.train_model, checkpoint, existing_model=True)
     return model
