@@ -1,0 +1,309 @@
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
+import unittest
+from unittest.mock import patch
+
+import h5py
+import numpy as np
+from rich.text import Text
+
+from deepposekit.cli import main
+from deepposekit.io import VideoWriter
+from deepposekit.models import load_model
+
+
+def invoke(*args):
+    out, err = StringIO(), StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        status = main([str(value) for value in args])
+    return status, out.getvalue(), err.getvalue()
+
+
+class TerminalTests(unittest.TestCase):
+    def test_grouped_help_wraps_and_respects_color(self):
+        class Terminal(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        for width in (40, 80):
+            for flags in ([], ["predict"]):
+                details = Terminal()
+                with (
+                    patch(
+                        "os.get_terminal_size",
+                        return_value=os.terminal_size((width, 24)),
+                    ),
+                    patch.dict(os.environ, {"TERM": "xterm"}, clear=True),
+                    redirect_stdout(details),
+                    self.assertRaises(SystemExit) as result,
+                ):
+                    main([*flags, "--help"])
+                self.assertEqual(result.exception.code, 0)
+                rendered = details.getvalue()
+                self.assertIn("\x1b[", rendered)
+                self.assertTrue(
+                    all(
+                        line.cell_len <= width
+                        for line in Text.from_ansi(rendered).split()
+                    )
+                )
+                if not flags:
+                    self.assertIn("Model workflow", rendered)
+                    self.assertIn("Data and inspection", rendered)
+
+        for option, colored in (("auto", False), ("always", True), ("never", False)):
+            output = StringIO()
+            with redirect_stdout(output), self.assertRaises(SystemExit) as result:
+                main(["--color", option, "--help"])
+            self.assertEqual(result.exception.code, 0)
+            self.assertEqual("\x1b[" in output.getvalue(), colored)
+
+    def test_missing_reader_has_usage_error(self):
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as result:
+            main(
+                [
+                    "predict",
+                    "model.keras",
+                    "video.avi",
+                    "result.npy",
+                    "--custom-reader-args",
+                ]
+            )
+        self.assertEqual(result.exception.code, 2)
+
+    @unittest.skipUnless(
+        sys.platform != "win32", "Shell completion harness uses Unix shells."
+    )
+    def test_completion_and_fast_module_entry(self):
+        for shell in ("bash", "zsh"):
+            status, script, stderr = invoke("completion", shell)
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("deepposekit", script)
+        entry = [sys.executable, "-m", "deepposekit"]
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import runpy, sys\n"
+                "try:\n"
+                "    runpy.run_module('deepposekit', run_name='__main__')\n"
+                "except SystemExit as error:\n"
+                "    assert error.code == 0\n"
+                "assert 'tensorflow' not in sys.modules",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Model workflow", result.stdout)
+        with TemporaryDirectory() as directory:
+            target = Path(directory) / "response"
+            config = Path(directory) / "training.toml"
+            config.touch()
+            for line, prefix in (
+                ("deepposekit tr", "train"),
+                ("deepposekit dataset i", "init"),
+                ("deepposekit predict --bat", "--batch-size"),
+                ("deepposekit train tra", "training.toml"),
+            ):
+                target.touch()
+                env = dict(
+                    os.environ,
+                    _ARGCOMPLETE="3",
+                    _ARGCOMPLETE_STDOUT_FILENAME=str(target),
+                    COMP_LINE="python -m " + line,
+                    COMP_POINT=str(len(line) + 10),
+                )
+                subprocess.run(entry, cwd=directory, env=env, check=True)
+                self.assertIn(prefix, target.read_text())
+
+
+class WorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        scratch = TemporaryDirectory()
+        cls.addClassCleanup(scratch.cleanup)
+        cls.path = Path(scratch.name)
+        cls.images = np.random.default_rng(37).integers(
+            0, 256, (5, 64, 64, 1), dtype=np.uint8
+        )
+        cls.video = cls.path / "frames.avi"
+        writer = VideoWriter(str(cls.video), (64, 64), codec="FFV1", fps=5)
+        try:
+            writer.write_batch(np.repeat(cls.images, 3, axis=-1))
+        finally:
+            writer.close()
+        cls.skeleton = cls.path / "skeleton.csv"
+        cls.skeleton.write_text("name,parent,swap\nhead,,tail\ntail,head,head\n")
+        cls.annotations = cls.path / "annotations.h5"
+        result, _, errors = invoke(
+            "dataset",
+            "init",
+            cls.annotations,
+            "--video",
+            cls.video,
+            "--skeleton",
+            cls.skeleton,
+            "--gray",
+        )
+        if result:
+            raise AssertionError(errors)
+        with h5py.File(cls.annotations, "r+") as file:
+            file["annotations"][:] = np.tile([[10, 12], [36, 24]], (5, 1, 1))
+            file["annotated"][:] = True
+        cls.checkpoint = cls.path / "model.keras"
+        cls.config = cls.path / "training.toml"
+        cls.config.write_text(
+            '[data]\nannotations = "annotations.h5"\n'
+            "[generator]\nuse_graph = false\nsigma = 3\nshuffle = false\nrandom_seed = 5\n"
+            'augmenter = [{name = "FlipAxis", axis = 1, p = 1.0}]\n'
+            '[model]\nname = "StackedDenseNet"\nn_transitions = 3\ngrowth_rate = 8\nsubpixel = false\n'
+            '[compile]\noptimizer = {name = "adam", learning_rate = 0.002}\nloss = "mse"\njit_compile = false\n'
+            "[training]\nbatch_size = 2\nepochs = 1\nsteps_per_epoch = 1\nverbose = 2\n"
+            'callbacks = ["TerminateOnNaN"]\n'
+            '[output]\ncheckpoint = "model.keras"\n'
+        )
+        result, _, errors = invoke("train", cls.config)
+        if result:
+            raise AssertionError(errors)
+        cls.model = load_model(cls.checkpoint, compile=False)
+
+    def test_config_and_inspection(self):
+        status, text, errors = invoke("--color", "always", "inspect", self.annotations)
+        self.assertEqual(status, 0, errors)
+        self.assertEqual(json.loads(text)["labeled_frames"], 5)
+        status, text, errors = invoke("inspect", self.checkpoint)
+        self.assertEqual(status, 0, errors)
+        self.assertEqual(json.loads(text)["image_shape"], [64, 64, 1])
+        metadata = self.model._checkpoint_metadata
+        self.assertEqual(metadata["pose_model_config"]["config"]["growth_rate"], 8)
+        training = metadata["train_generator_config"]["config"]
+        self.assertEqual(training["sigma"], 3)
+        self.assertEqual(training["skeleton_names"], ["head", "tail"])
+        self.assertTrue(training["augmenter"])
+        trained = load_model(self.checkpoint, compile=True)
+        self.assertAlmostEqual(
+            float(trained.train_model.optimizer.learning_rate), 0.002
+        )
+        self.assertEqual(int(trained.train_model.optimizer.iterations), 1)
+
+    def test_predict_and_evaluate_include_short_final_batch(self):
+        expected = self.model.predict(self.images, batch_size=2, verbose=0)
+        output = self.path / "predictions.npy"
+        command = (
+            "predict",
+            self.checkpoint,
+            self.video,
+            output,
+            "--gray",
+            "--batch-size",
+            2,
+        )
+        status, _, errors = invoke(*command)
+        self.assertEqual(status, 0, errors)
+        np.testing.assert_allclose(np.load(output), expected, rtol=1e-6, atol=1e-6)
+        status, _, errors = invoke(*command)
+        self.assertEqual(status, 1)
+        self.assertIn("--overwrite", errors)
+        metrics = self.path / "metrics.json"
+        status, _, errors = invoke(
+            "evaluate",
+            self.checkpoint,
+            self.annotations,
+            "--batch-size",
+            2,
+            "--output",
+            metrics,
+        )
+        self.assertEqual(status, 0, errors)
+        report = json.loads(metrics.read_text())
+        self.assertEqual(report["frames"], 5)
+        self.assertEqual(len(report["per_keypoint_mean_px"]), 2)
+
+    def test_custom_reader_arguments_and_cleanup_after_failure(self):
+        data = self.path / "input.npy"
+        np.save(data, self.images)
+        fixture = self.path / "reader.py"
+        fixture.write_text(
+            "import argparse\nfrom pathlib import Path\nimport numpy as np\n"
+            "def create_reader(path, *, batch_size, argv):\n"
+            "    parser = argparse.ArgumentParser()\n"
+            "    parser.add_argument('--gray', action='store_true', required=True)\n"
+            "    parser.add_argument('--camera', required=True)\n"
+            "    options = parser.parse_args(argv)\n"
+            "    assert options.camera in ('Camera 1', 'bad shape')\n"
+            "    frames = np.load(path)\n"
+            "    def batches():\n"
+            "        try:\n"
+            "            for index in range(0, len(frames), batch_size):\n"
+            "                batch = frames[index:index + batch_size]\n"
+            "                yield batch if not index or options.camera == 'Camera 1' else batch[:, :1]\n"
+            "        finally:\n"
+            "            Path(path).with_suffix('.closed').touch()\n"
+            "    return batches()\n"
+        )
+        output = self.path / "custom.npy"
+        closed = data.with_suffix(".closed")
+        args = (
+            "predict",
+            self.checkpoint,
+            data,
+            output,
+            "--batch-size",
+            2,
+            "--custom-reader",
+            fixture,
+        )
+        status, _, errors = invoke(
+            *args, "--custom-reader-args", "--camera", "Camera 1", "--gray"
+        )
+        self.assertEqual(status, 0, errors)
+        self.assertTrue(closed.is_file())
+        prior = output.read_bytes()
+        np.testing.assert_allclose(
+            np.load(output),
+            self.model.predict(self.images, batch_size=2, verbose=0),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        closed.unlink()
+        status, _, errors = invoke(
+            *args,
+            "--overwrite",
+            "--custom-reader-args",
+            "--camera",
+            "bad shape",
+            "--gray",
+        )
+        self.assertEqual(status, 1)
+        self.assertIn("Batch 2", errors)
+        self.assertTrue(closed.is_file())
+        self.assertEqual(output.read_bytes(), prior)
+
+    def test_fine_tune_with_existing_weights_and_reject_wrong_skeleton(self):
+        config = self.path / "fine-tune.toml"
+        config.write_text(
+            self.config.read_text().replace('"model.keras"', '"fine-tuned.keras"')
+        )
+        status, _, errors = invoke("train", config, "--init-from", self.checkpoint)
+        self.assertEqual(status, 0, errors)
+        self.assertTrue((self.path / "fine-tuned.keras").is_file())
+        alternate = self.path / "other.h5"
+        alternate.write_bytes(self.annotations.read_bytes())
+        with h5py.File(alternate, "r+") as file:
+            file["skeleton_names"][:] = [b"tail", b"head"]
+        config.write_text(config.read_text().replace('"annotations.h5"', '"other.h5"'))
+        status, _, errors = invoke(
+            "train", config, "--init-from", self.checkpoint, "--overwrite"
+        )
+        self.assertEqual(status, 1)
+        self.assertIn("skeleton_names", errors)

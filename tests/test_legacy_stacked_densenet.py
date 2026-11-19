@@ -233,7 +233,11 @@ class LegacyStackedDenseNetTest(unittest.TestCase):
             checkpoint = directory / "relocated.hdf5"
             shutil.copyfile(self.full, checkpoint)
             modern = directory / "fly.keras"
-            self._fresh_process_prediction(checkpoint, directory, "legacy-full", modern)
+            self._fresh_process_prediction(checkpoint, directory, "legacy-full")
+            subprocess.run(
+                [sys.executable, "-m", "deepposekit", "convert", str(checkpoint), str(modern)],
+                check=True,
+            )
             self._fresh_process_prediction(modern, directory, "modern-full", None)
             self.assertEqual(_sha256(checkpoint), checksum)
         self.assertEqual(_sha256(self.full), checksum)

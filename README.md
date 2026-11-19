@@ -46,6 +46,160 @@ Use `uv run --locked --extra gpu deepposekit-gpu your_script.py` for the trainin
 and prediction examples below. GPU training and legacy subpixel prediction were
 tested on an RTX 4090 in WSL2.
 
+## Command line
+
+From a checkout, run `uv run --locked deepposekit --help` or
+`uv run --locked python -m deepposekit --help`. To install the CLI or run it
+without a checkout, replace `CLI_REF` with a fork tag or commit containing the CLI.
+
+```bash
+fork='git+https://github.com/fhaefele/DeepPoseKit.git@CLI_REF'
+uv tool install --python 3.12 "$fork"
+deepposekit --help
+uvx --python 3.12 --from "$fork" deepposekit --help
+```
+
+For GPU training or prediction, use the launcher with the `gpu` extra.
+
+```bash
+uv run --locked --extra gpu deepposekit-gpu -m deepposekit train training.toml
+uvx --python 3.12 --from "deepposekit[gpu] @ $fork" deepposekit-gpu -m deepposekit train training.toml
+```
+
+### Prepare, train, and evaluate
+
+Use a skeleton CSV with `name`, `parent`, and `swap` columns. Leave a root's
+`parent` and an unpaired keypoint's `swap` empty. Label the resulting HDF5 in
+an external annotator.
+
+```bash
+deepposekit dataset init annotations.h5 --video video.avi --skeleton skeleton.csv --frame-step 20 --gray
+deepposekit inspect annotations.h5
+```
+
+Save this as `training.toml` beside your labeled `annotations.h5`.
+
+```toml
+[data]
+annotations = "annotations.h5"
+dataset = "images"
+
+[generator]
+downsample_factor = 2
+use_graph = true
+sigma = 5
+validation_split = 0.2
+random_seed = 17
+augmenter = [{ name = "Affine", rotate = -5 }]
+
+[model]
+name = "StackedDenseNet"
+n_stacks = 1
+growth_rate = 48
+subpixel = true
+
+[compile]
+optimizer = { name = "Adam", learning_rate = 0.001 }
+loss = "mse"
+jit_compile = false
+
+[training]
+batch_size = 2
+epochs = 1
+n_workers = 1
+callbacks = [{ name = "EarlyStopping", monitor = "val_loss", patience = 2 }]
+
+[output]
+checkpoint = "fly.keras"
+```
+
+```bash
+deepposekit train training.toml
+deepposekit inspect fly.keras
+deepposekit evaluate fly.keras holdout.h5 --output metrics.json
+```
+
+All paths in the config are relative to the TOML file unless absolute. The
+options use the Python argument names.
+
+| Section | Options |
+| --- | --- |
+| `[data]` | `DataGenerator` options, including `dataset` and `mode`, with `annotations` supplying the HDF5 path. |
+| `[generator]` | `TrainingGenerator` options such as `downsample_factor`, `use_graph`, `graph_scale`, `sigma`, `validation_split`, `shuffle`, and `random_seed`. |
+| `[model]` | Constructor options for `StackedDenseNet` (the default), `StackedHourglass`, `LEAP`, or `DeepLabCut`. Set `pretrained_weights = "none"` or `weights = "none"` on models that expose those options to initialize without external weights. |
+| `[compile]` | Keras `Model.compile` options. Omit the section for Adam and mean squared error. |
+| `[training]` | DeepPoseKit `fit` options and Keras fit controls such as `initial_epoch` and `validation_freq`. Set `batch_size`. Omit `steps_per_epoch` to use all full training batches. |
+| `[output]` | Final `.keras` checkpoint path. |
+
+Optimizer, loss, and metric specifications accept Keras names or tables
+containing a built-in name and its parameters. `augmenter` and `callbacks`
+take ordered arrays of names or tables. Augmenters use imgaug classes and
+DeepPoseKit's `FlipAxis`. Callbacks use Keras classes and DeepPoseKit's
+`Logger` and `ModelCheckpoint`. Use the Python API to supply custom objects.
+Commands that create an output require `--overwrite` to replace it.
+
+For fine-tuning, use compatible labeled annotations and a new output path in
+`fine-tune.toml`. Set `[model].name` for other backbones. Omit architecture
+and confidence map settings to inherit them from the checkpoint. Training uses
+a fresh optimizer. For older checkpoints with incomplete skeleton metadata,
+check the original keypoint order and skeleton before fine-tuning.
+
+```bash
+deepposekit train fine-tune.toml --init-from best_model_densenet.h5
+```
+
+### Convert and predict
+
+```bash
+deepposekit convert best_model_densenet.h5 fly-converted.keras
+deepposekit predict fly-converted.keras video.avi predictions.npy --gray --batch-size 8
+deepposekit convert legacy.weights-only.h5 fly-from-weights.keras --config legacy-training.toml
+```
+
+For a weights-only conversion, the config must match the original model and
+annotation geometry. The [weights-only Python example](#import-legacy-stackeddensenet-weights)
+lists the architecture options for the public fly checkpoint. Prediction accepts
+both full legacy checkpoints and modern `.keras` files. The output is a NumPy
+array of `(frames, keypoints, 3)` with `(x, y, confidence)` in input frame order.
+
+A custom reader can open recordings that the built-in video reader cannot.
+
+```bash
+deepposekit predict model.keras recording.h5 predictions.npy \
+  --batch-size 8 --custom-reader ./reader.py \
+  --custom-reader-args --camera Camera1 --gray --uint8
+```
+
+DeepPoseKit loads the selected local Python file and calls
+`create_reader(path, *, batch_size, argv)`. The factory gets a `Path`, the
+requested batch size, and a list of every argument after
+`--custom-reader-args`. Put DeepPoseKit flags before that marker. Return an
+iterable of NumPy arrays shaped `(batch, height, width, channels)` in frame
+order, including the final short batch. DeepPoseKit closes the iterator and
+reader when they provide `close()` methods. Prediction takes one recording
+per invocation.
+
+### Help, completion, and environment
+
+Run `deepposekit train --help` for command-specific flags and
+`deepposekit doctor` for installed versions and detected devices. Help uses
+terminal width and supports `--color auto|always|never`. Machine-readable
+output is plain text.
+
+In Bash, add the following to your shell configuration.
+
+```bash
+source <(deepposekit completion bash)
+```
+
+In Zsh, run the following after any existing `compinit` setup.
+
+```zsh
+autoload -Uz compinit
+compinit
+source <(deepposekit completion zsh)
+```
+
 ## Train from HDF5 annotations
 
 Use `deepposekit.io.initialize_dataset` to prepare images and a keypoint

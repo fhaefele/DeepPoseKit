@@ -13,17 +13,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import absolute_import
-import sys
-import warnings
+"""Tools for animal pose estimation."""
 
-from deepposekit.io import TrainingGenerator, DataGenerator
-from deepposekit.augment.FlipAxis import FlipAxis
+from importlib import import_module
 
-from deepposekit.annotate.KMeansSampler import KMeansSampler
-
-from deepposekit.io.video import VideoReader, VideoWriter
-
-
-__doc__ = """ """  # open('README.md').read()
 __version__ = "0.3.9"
+
+_EXPORTS = {
+    "TrainingGenerator": ".io",
+    "DataGenerator": ".io",
+    "FlipAxis": ".augment.FlipAxis",
+    "KMeansSampler": ".annotate.KMeansSampler",
+    "VideoReader": ".io.video",
+    "VideoWriter": ".io.video",
+}
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    if name in _EXPORTS:
+        value = getattr(import_module(_EXPORTS[name], __name__), name)
+        globals()[name] = value
+        return value
+    if name in {"annotate", "augment", "callbacks", "io", "models", "utils"}:
+        return import_module(f".{name}", __name__)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(globals().keys() | _EXPORTS.keys())

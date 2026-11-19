@@ -328,5 +328,9 @@ class TrainingGenerator(PyDataset):
             "random_seed": self.random_seed,
             "augmenter": augmenter,
         }
+        config["skeleton"] = np.column_stack((self.graph, self.swap_index)).tolist()
+        names = getattr(self.generator, "skeleton_names", None)
+        if names is not None:
+            config["skeleton_names"] = names
         base_config = self.generator.get_config()
         return dict(list(config.items()) + list(base_config.items()))

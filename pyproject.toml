@@ -19,6 +19,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Recognition",
 ]
 dependencies = [
+    "argcomplete>=3.5,<4",
     "h5py",
     "imgaug==0.4.0",
     "keras==3.15.1",
@@ -29,6 +30,7 @@ dependencies = [
     "opencv-python<4.12",
     "pandas",
     "pyyaml",
+    "rich-argparse>=1.7,<2",
     "scikit-learn",
     "tensorflow==2.21.0",
 ]
@@ -39,6 +41,7 @@ gpu = [
 ]
 
 [project.scripts]
+deepposekit = "deepposekit.cli:main"
 deepposekit-gpu = "_deepposekit_gpu:main"
 
 [project.urls]

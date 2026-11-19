@@ -91,6 +91,10 @@ class DataGenerator(BaseGenerator):
             # Initialize skeleton attributes
             self.graph = h5file["skeleton"][:, 0]
             self.swap_index = h5file["skeleton"][:, 1]
+            self.skeleton_names = (
+                h5file["skeleton_names"].asstr(errors="replace")[:].tolist()
+                if "skeleton_names" in h5file else None
+            )
 
         super(DataGenerator, self).__init__(**kwargs)
 

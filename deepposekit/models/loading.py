@@ -87,14 +87,18 @@ def _legacy_checkpoint_layout(checkpoint):
     )
 
 
+def _full_hdf5_metadata(checkpoint):
+    if _legacy_checkpoint_layout(checkpoint) == "weights-only":
+        raise ValueError(
+            "Expected a full DeepPoseKit checkpoint. For weights-only HDF5 use "
+            "load_legacy_weights with a matching StackedDenseNet model."
+        )
+    return _read_metadata(checkpoint.attrs)
+
+
 def _load_legacy(path, custom_objects, compile_model):
     with h5py.File(path, "r") as checkpoint:
-        if _legacy_checkpoint_layout(checkpoint) == "weights-only":
-            raise ValueError(
-                "Expected a full DeepPoseKit checkpoint. For weights-only HDF5 use "
-                "load_legacy_weights with a matching StackedDenseNet model."
-            )
-        metadata = _read_metadata(checkpoint.attrs)
+        metadata = _full_hdf5_metadata(checkpoint)
         graph = read_config(checkpoint.attrs["model_config"], "model_config")
         if graph["class_name"] not in {"Model", "Functional"}:
             raise ValueError(
@@ -127,7 +131,7 @@ def _load_legacy(path, custom_objects, compile_model):
     return model, metadata
 
 
-def _load_modern(path, custom_objects, compile_model):
+def _modern_checkpoint_metadata(path):
     with ZipFile(path) as archive:
         try:
             with archive.open(METADATA_ENTRY) as entry:
@@ -136,6 +140,24 @@ def _load_modern(path, custom_objects, compile_model):
             raise ValueError(
                 f"{path} lacks valid DeepPoseKit checkpoint metadata"
             ) from error
+    return metadata
+
+
+def read_checkpoint_metadata(path):
+    """Read DeepPoseKit metadata without loading the model or its weights."""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    if h5py.is_hdf5(path):
+        with h5py.File(path, "r") as checkpoint:
+            return _full_hdf5_metadata(checkpoint)
+    if path.suffix == ".keras":
+        return _modern_checkpoint_metadata(path)
+    raise ValueError(f"Unsupported DeepPoseKit checkpoint format at {path}")
+
+
+def _load_modern(path, custom_objects, compile_model):
+    metadata = _modern_checkpoint_metadata(path)
     model = keras.saving.load_model(
         path, custom_objects=custom_objects, compile=compile_model
     )
@@ -207,7 +229,11 @@ def _restore_model(train_model, metadata, generator, augmenter):
         )
 
     train_generator = None
-    if generator is not None:
+    if isinstance(generator, TrainingGenerator):
+        if augmenter is not None:
+            raise ValueError("Set the augmenter on the supplied TrainingGenerator")
+        train_generator = generator
+    elif generator is not None:
         params = inspect.signature(TrainingGenerator).parameters
         options = {
             key: saved_generator[key]
@@ -217,10 +243,15 @@ def _restore_model(train_model, metadata, generator, augmenter):
         train_generator = TrainingGenerator(
             generator=generator, augmenter=augmenter, **options
         )
-        if _geometry(train_generator.get_config()) != geometry:
+    if train_generator is not None:
+        current = train_generator.get_config()
+        if _geometry(current) != geometry:
             raise ValueError(
                 "The supplied training generator does not match the checkpoint geometry"
             )
+        for key in ("skeleton", "skeleton_names"):
+            if key in saved_generator and saved_generator[key] != current.get(key):
+                raise ValueError(f"The supplied training generator does not match the checkpoint {key}")
 
     params = inspect.signature(model_type).parameters
     model_options = {
@@ -245,7 +276,7 @@ def _restore_model(train_model, metadata, generator, augmenter):
 def load_model(path, generator=None, augmenter=None, custom_objects=None, compile=True):
     """Load a DeepPoseKit checkpoint from legacy HDF5 or modern Keras format.
 
-    Supply a compatible annotation generator to train the returned model.
+    Supply a compatible annotation generator or TrainingGenerator to train the returned model.
     With `compile=False`, the model is ready for inference or manual compilation.
     A legacy checkpoint loaded with `compile=True` starts with a fresh optimizer.
     """
