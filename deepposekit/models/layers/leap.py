@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorflow.keras import layers
+from keras import activations, layers
 
 __all__ = ["ConvBlock2D", "ConvPool2D"]
 
@@ -34,14 +34,10 @@ class ConvBlock2D:
         self.filters = filters
         self.kernel_size = kernel_size
         self.activation = activation
-        self.initializer = initializer
         self.use_bias = use_bias
-        if activation.lower() is not "selu" and batchnorm:
-            self.batchnorm = True
-        else:
-            self.batchnorm = False
-        if activation.lower() is "selu":
-            self.initializer = "lecun_normal"
+        uses_selu = activations.get(activation) is activations.selu
+        self.batchnorm = batchnorm and not uses_selu
+        self.initializer = "lecun_normal" if uses_selu else initializer
         self.name = name
 
     def __call__(self, inputs):
@@ -78,16 +74,12 @@ class ConvPool2D:
         self.filters = filters
         self.kernel_size = kernel_size
         self.activation = activation
-        self.initializer = initializer
         self.use_bias = use_bias
         self.pooling = pooling
-        if activation.lower() is not "selu" and batchnorm:
-            self.batchnorm = True
-        else:
-            self.batchnorm = False
-        if activation.lower() is "selu":
-            self.initializer = "lecun_normal"
-        if pooling is "average":
+        uses_selu = activations.get(activation) is activations.selu
+        self.batchnorm = batchnorm and not uses_selu
+        self.initializer = "lecun_normal" if uses_selu else initializer
+        if pooling == "average":
             self.Pooling2D = layers.AveragePooling2D
         else:
             self.Pooling2D = layers.MaxPooling2D
@@ -103,6 +95,6 @@ class ConvPool2D:
             self.batchnorm,
             self.use_bias,
         )(inputs)
-        outputs = self.Pooling2D()(outputs)
+        outputs = self.Pooling2D(pool_size=2)(outputs)
 
         return outputs

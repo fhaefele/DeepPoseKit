@@ -13,13 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorflow.keras import Input, Model
-from tensorflow.keras.layers import Conv2D, Conv2DTranspose, BatchNormalization
+from keras import Model, activations
+from keras.layers import BatchNormalization, Conv2D, Conv2DTranspose
 
-from deepposekit.models.layers.convolutional import UpSampling2D
-from deepposekit.models.layers.util import ImageNormalization
-from deepposekit.models.layers.leap import ConvBlock2D, ConvPool2D
 from deepposekit.models.engine import BaseModel
+from deepposekit.models.layers.convolutional import UpSampling2D
+from deepposekit.models.layers.leap import ConvBlock2D, ConvPool2D
+from deepposekit.models.layers.util import ImageNormalization
 
 
 class LEAP(BaseModel):
@@ -35,7 +35,7 @@ class LEAP(BaseModel):
         interpolation="bilinear",
         subpixel=False,
         initializer="glorot_uniform",
-        **kwargs
+        **kwargs,
     ):
         """
         Define a LEAP model from Pereira et al., 2018 [1]
@@ -50,7 +50,7 @@ class LEAP(BaseModel):
             The base number of channels to output from each
             convolutional layer. Increases by up to a factor
             of 4 with network depth.
-        upsampling_layers: bool, default = False
+        upsampling: bool, default = False
             Whether to use upsampling or transposed convolutions
             for upsampling layers. Default is False, which uses
             transposed convolutions.
@@ -63,11 +63,10 @@ class LEAP(BaseModel):
         pooling: str, default = 'max'
             The type of pooling to use during downsampling.
             Must be either 'max' or 'average'.
-        interpolation: str, default = 'nearest'
+        interpolation: str, default = 'bilinear'
             The type of interpolation to use when upsampling.
             Must be 'nearest', 'bilinear', or 'bicubic'.
-            The default is 'nearest', which is the most efficient.
-        subpixel: bool, default = True
+        subpixel: bool, default = False
             Whether to use subpixel maxima for calculating
             keypoint coordinates in the prediction model.
         initializer: str or callable, default='glorot_uniform'
@@ -101,7 +100,7 @@ class LEAP(BaseModel):
         self.filters = filters
         self.upsampling = upsampling
         self.activation = activation
-        if activation is "selu":
+        if activations.get(activation) is activations.selu:
             batchnorm = False
             use_bias = False
         if batchnorm:
@@ -115,8 +114,10 @@ class LEAP(BaseModel):
         super(LEAP, self).__init__(train_generator, subpixel, **kwargs)
 
     def __init_model__(self):
-        if self.train_generator.downsample_factor is not 0:
+        if self.train_generator.downsample_factor != 0:
             raise ValueError("LEAP is only compatible with a downsample_factor of 0")
+        if any(size % 4 for size in self.input_shape[:2]):
+            raise ValueError("LEAP requires image height and width divisible by 4")
         normalized = ImageNormalization()(self.inputs)
 
         x1 = ConvPool2D(

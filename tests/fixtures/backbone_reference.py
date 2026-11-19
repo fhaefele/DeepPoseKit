@@ -9,6 +9,17 @@ import sys
 
 # Small configurations retain each upstream model's layers and decoder.
 BACKBONES = {
+    "LEAP": {
+        "training": {"downsample_factor": 0, "use_graph": False, "sigma": 3},
+        "model": {
+            "filters": 8,
+            "batchnorm": True,
+            "pooling": "average",
+            "upsampling": True,
+            "interpolation": "bilinear",
+            "subpixel": False,
+        },
+    },
     "StackedHourglass": {
         "training": {"downsample_factor": 2, "use_graph": False, "sigma": 5},
         "model": {
