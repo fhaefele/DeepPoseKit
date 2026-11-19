@@ -494,6 +494,28 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(all((root / f"{name}.closed").is_file() for name in ("a", "b")))
         load.assert_called_once()
 
+    def test_example_video_reader_forwards_rotation_and_grayscale(self):
+        example = Path(__file__).resolve().parents[1] / "examples" / "videoreader.py"
+        output = self.path / "example-reader.npy"
+        status, _, errors = invoke(
+            "predict",
+            self.checkpoint,
+            self.video,
+            output,
+            "--batch-size",
+            2,
+            "--custom-reader",
+            example,
+            "--custom-reader-args",
+            "--gray",
+            "--rotate",
+            90,
+        )
+        self.assertEqual(status, 0, errors)
+        rotated = np.rot90(self.images, axes=(1, 2))
+        expected = self.model.predict(rotated, batch_size=2, verbose=0)
+        np.testing.assert_allclose(np.load(output), expected, rtol=1e-6, atol=1e-6)
+
     def test_custom_reader_arguments_and_cleanup_after_failure(self):
         data = self.path / "input.npy"
         np.save(data, self.images)

@@ -154,13 +154,21 @@ lists the architecture options for the public fly checkpoint. Prediction accepts
 both full legacy checkpoints and modern `.keras` files. The output is a NumPy
 array of `(frames, keypoints, 3)` with `(x, y, confidence)` in input frame order.
 
-A custom reader can open recordings that the built-in video reader cannot.
+A custom reader can add preprocessing or read another recording format.
+The runnable [videoreader.py example](examples/videoreader.py) uses
+`VideoReader` and adds grayscale and rotation options.
 
 ```bash
-deepposekit predict model.keras recording.h5 predictions.npy \
-  --batch-size 8 --custom-reader ./reader.py \
-  --custom-reader-args --camera Camera1 --gray --uint8
+uv run --locked deepposekit predict model.keras video.avi predictions.npy \
+  --batch-size 8 --custom-reader examples/videoreader.py \
+  --custom-reader-args --gray --rotate 90
 ```
+
+Run this command from the checkout root. For a tool install, download the
+example and pass its path to `deepposekit predict`. Choose preprocessing that
+matches the checkpoint's input shape and channel count. Prediction coordinates
+refer to the transformed frames. Pass `--help` after `--custom-reader-args` to
+show the example reader's options.
 
 A custom reader module defines `create_reader(path, *, batch_size, argv)`.
 For single-stream readers, DeepPoseKit passes this factory a `Path`, the
@@ -168,7 +176,9 @@ requested batch size, and a list of every argument after
 `--custom-reader-args`. Put DeepPoseKit flags before that marker. Return an
 iterable of NumPy arrays shaped `(batch, height, width, channels)` in frame
 order, including the final short batch. DeepPoseKit closes the iterator and
-reader when they provide `close()` methods.
+reader when they provide `close()` methods. To support a different file
+format, keep the factory signature and adapt how the example opens the
+recording and yields frames.
 
 #### Predict on multiple recordings
 
@@ -190,9 +200,10 @@ only by case. Existing outputs require `--overwrite`. If a recording fails
 during inference, completed outputs from the run remain available.
 
 Custom reader flags apply to every input. A reader may declare
-`INPUT_EXTENSIONS = (".h5", ".hdf5")` to filter directory scans. When a custom
-reader omits that setting, all regular input files are candidates. Choose a
-separate output directory for readers whose scans include `.npy` files.
+`INPUT_EXTENSIONS` to filter directory scans. The example reader uses
+`(".avi", ".mkv", ".mov", ".mp4")`. When a custom reader omits that setting,
+all regular input files are candidates. Choose a separate output directory
+for readers whose scans include `.npy` files.
 For recordings with several streams, a reader can also define
 `prediction_streams(argv)`. When this hook is present, the CLI uses its
 mapping of stream names to factories accepting `(path, *, batch_size)`.
