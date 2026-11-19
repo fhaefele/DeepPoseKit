@@ -1,4 +1,4 @@
-from contextlib import ExitStack, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, chdir, redirect_stderr, redirect_stdout
 from io import StringIO
 import json
 import os
@@ -383,6 +383,7 @@ class WorkflowTests(unittest.TestCase):
         fixture.write_text(
             "import numpy as np\n"
             "def create_reader(path, *, batch_size, argv):\n"
+            "    assert create_reader.__code__.co_filename == __file__\n"
             "    yield np.load(path)\n"
         )
         with patch("deepposekit.cli.operations.load_model") as load:
@@ -399,7 +400,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("separate --output-dir", errors)
         load.assert_not_called()
         output = root / "predictions"
-        with patch("deepposekit.cli.operations.load_model", return_value=self.model):
+        with (
+            chdir(root),
+            patch("deepposekit.cli.operations.load_model", return_value=self.model),
+        ):
             status, _, errors = invoke(
                 "predict",
                 self.checkpoint,
@@ -408,7 +412,7 @@ class WorkflowTests(unittest.TestCase):
                 "--output-dir",
                 output,
                 "--custom-reader",
-                fixture,
+                fixture.name,
             )
         self.assertEqual(status, 0, errors)
         self.assertEqual(list(output.rglob("*.npy")), [output / "a.npy"])

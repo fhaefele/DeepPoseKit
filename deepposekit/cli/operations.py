@@ -178,7 +178,7 @@ def custom_reader_module(path):
         # Load the explicitly selected source without creating a bytecode file
         # in the recording directory.
         exec(
-            compile(path.read_bytes(), str(path), "exec", dont_inherit=True),
+            compile(path.read_bytes(), spec.origin, "exec", dont_inherit=True),
             vars(module),
         )
         if not callable(getattr(module, "create_reader", None)):
