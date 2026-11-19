@@ -11,6 +11,8 @@ from argcomplete.completers import FilesCompleter
 from deepposekit import __version__
 from deepposekit.cli.terminal import TerminalParser, color_mode
 
+READER_ARGS = "--custom-reader-args"
+
 
 def _path(parser, name, *extensions, **options):
     action = parser.add_argument(name, type=Path, **options)
@@ -144,7 +146,7 @@ def make_parser(color="auto"):
         help="Python file with a create_reader factory.",
     )
     predict.add_argument(
-        "--custom-reader-args",
+        READER_ARGS,
         nargs=argparse.REMAINDER,
         metavar="ARG",
         help="Forward the remaining arguments to the custom reader.",
@@ -182,7 +184,15 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     parser = make_parser(color_mode(argv))
     argcomplete.autocomplete(parser)
-    args = parser.parse_args(argv)
+    # argparse treats "--" specially even inside a REMAINDER. Parse only the
+    # DeepPoseKit prefix so a reader receives all remaining arguments unchanged.
+    end = argv.index("--") if "--" in argv else len(argv)
+    if READER_ARGS in argv[:end]:
+        index = argv.index(READER_ARGS)
+        args = parser.parse_args(argv[: index + 1])
+        args.custom_reader_args = argv[index + 1 :]
+    else:
+        args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
         return 0

@@ -139,7 +139,10 @@ def initialize_dataset(
     width = images.shape[2]
     n_channels = images.shape[3]
     skeleton = initialize_skeleton(skeleton)
-    skeleton_names = skeleton["name"].values
+    skeleton_names = [str(name).encode("utf-8") for name in skeleton["name"]]
+    name_dtype = h5py.string_dtype(
+        encoding="utf-8", length=max((len(name) for name in skeleton_names), default=1)
+    )
     skeleton = skeleton[["tree", "swap_index"]].values
     n_keypoints = skeleton.shape[0]
 
@@ -172,8 +175,8 @@ def initialize_dataset(
         h5file.create_dataset(
             "skeleton_names",
             (skeleton.shape[0],),
-            dtype="S10",
-            data=skeleton_names.astype("S10"),
+            dtype=name_dtype,
+            data=np.asarray(skeleton_names, dtype=name_dtype),
         )
 
 

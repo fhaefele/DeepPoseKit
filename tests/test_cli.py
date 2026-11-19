@@ -14,7 +14,7 @@ import numpy as np
 from rich.text import Text
 
 from deepposekit.cli import main
-from deepposekit.io import VideoWriter
+from deepposekit.io import DataGenerator, VideoWriter
 from deepposekit.models import load_model
 
 
@@ -166,7 +166,7 @@ class WorkflowTests(unittest.TestCase):
             '[data]\nannotations = "annotations.h5"\n'
             "[generator]\nuse_graph = false\nsigma = 3\nshuffle = false\nrandom_seed = 5\n"
             'augmenter = [{name = "FlipAxis", axis = 1, p = 1.0}]\n'
-            '[model]\nname = "StackedDenseNet"\nn_transitions = 3\ngrowth_rate = 8\nsubpixel = false\n'
+            '[model]\nname = "StackedDenseNet"\nn_transitions = -3\npretrained_weights = "none"\ngrowth_rate = 8\nsubpixel = false\n'
             '[compile]\noptimizer = {name = "adam", learning_rate = 0.002}\nloss = "mse"\njit_compile = false\n'
             "[training]\nbatch_size = 2\nepochs = 1\nsteps_per_epoch = 1\nverbose = 2\n"
             'callbacks = ["TerminateOnNaN"]\n'
@@ -239,7 +239,10 @@ class WorkflowTests(unittest.TestCase):
             "    parser = argparse.ArgumentParser()\n"
             "    parser.add_argument('--gray', action='store_true', required=True)\n"
             "    parser.add_argument('--camera', required=True)\n"
+            "    parser.add_argument('selection', nargs='?')\n"
             "    options = parser.parse_args(argv)\n"
+            "    if options.camera == 'Camera 1':\n"
+            "        assert options.selection == '--help'\n"
             "    assert options.camera in ('Camera 1', 'bad shape')\n"
             "    frames = np.load(path)\n"
             "    def batches():\n"
@@ -264,7 +267,13 @@ class WorkflowTests(unittest.TestCase):
             fixture,
         )
         status, _, errors = invoke(
-            *args, "--custom-reader-args", "--camera", "Camera 1", "--gray"
+            *args,
+            "--custom-reader-args",
+            "--camera",
+            "Camera 1",
+            "--gray",
+            "--",
+            "--help",
         )
         self.assertEqual(status, 0, errors)
         self.assertTrue(closed.is_file())
@@ -307,3 +316,122 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertEqual(status, 1)
         self.assertIn("skeleton_names", errors)
+
+    def test_invalid_training_geometry_leaves_existing_output(self):
+        config = self.path / "invalid.toml"
+        checksum = self.checkpoint.read_bytes()
+        content = self.config.read_text()
+        for original, invalid, message in (
+            ("subpixel = false", "subpixel = 0", "[model].subpixel"),
+            ("sigma = 3", "sigma = -1", "[generator].sigma"),
+        ):
+            with self.subTest(setting=invalid):
+                config.write_text(content.replace(original, invalid))
+                status, _, errors = invoke(
+                    "--color", "never", "train", config, "--overwrite"
+                )
+                self.assertEqual(status, 1)
+                self.assertIn(message, errors)
+                self.assertEqual(checksum, self.checkpoint.read_bytes())
+
+    def test_callback_template_cannot_overwrite_inputs(self):
+        data = self.path / "1.h5"
+        data.write_bytes(self.annotations.read_bytes())
+        prior = data.read_bytes()
+        config = self.path / "callback.toml"
+        content = self.config.read_text()
+        content = content.replace("annotations.h5", "1.h5").replace(
+            "model.keras", "callback.keras"
+        )
+        template = '{name="ModelCheckpoint", filepath="{epoch}.h5", monitor="loss", save_best_only=false}'
+        config.write_text(content.replace('"TerminateOnNaN"', template))
+        status, _, errors = invoke("train", config, "--overwrite")
+        self.assertEqual(status, 1)
+        self.assertIn("Callback path conflicts", errors)
+        self.assertEqual(data.read_bytes(), prior)
+        self.assertFalse((self.path / "callback.keras").is_file())
+
+    def test_checkpoint_template_and_backup_keep_existing_files(self):
+        runs = self.path / "runs"
+        first = runs / "1" / "checkpoint.keras"
+        first.parent.mkdir(parents=True)
+        first.write_bytes(b"existing output")
+        shared = self.path / "shared"
+        shared.mkdir()
+        unrelated = shared / "keep"
+        unrelated.write_text("unrelated contents")
+        config = self.path / "backup.toml"
+        content = self.config.read_text().replace("model.keras", "backup.keras")
+        checkpoint = (
+            '{name="ModelCheckpoint", filepath="runs/{epoch}/checkpoint.keras", '
+            'monitor="loss", save_best_only=false}'
+        )
+        backup = '{name="BackupAndRestore", backup_dir="shared"}'
+        config.write_text(content.replace('"TerminateOnNaN"', checkpoint))
+        status, _, errors = invoke("train", config)
+        self.assertEqual(status, 1)
+        self.assertEqual(first.read_bytes(), b"existing output")
+        config.write_text(
+            content.replace('"TerminateOnNaN"', f"{checkpoint}, {backup}")
+        )
+        status, _, errors = invoke("train", config, "--overwrite")
+        self.assertEqual(status, 0, errors)
+        load_model(first, compile=False)
+        self.assertEqual(list(shared.iterdir()), [unrelated])
+        self.assertEqual(unrelated.read_text(), "unrelated contents")
+
+    def test_dataset_init_keeps_full_names_and_streams_frame_sampling(self):
+        path = self.path / "many.avi"
+        frames = np.tile(self.images, (4, 1, 1, 1))
+        writer = VideoWriter(str(path), (64, 64), codec="FFV1", fps=5)
+        try:
+            writer.write_batch(np.repeat(frames, 3, axis=-1))
+        finally:
+            writer.close()
+        skeleton = self.path / "long-name.csv"
+        skeleton.write_text(
+            "name,parent,swap\nhead,,\nleft_antenna_base,head,\nleft_antenna_tip,head,\n"
+        )
+        destination = self.path / "long-name.h5"
+        status, _, errors = invoke(
+            "dataset",
+            "init",
+            destination,
+            "--video",
+            path,
+            "--skeleton",
+            skeleton,
+            "--frame-step",
+            3,
+            "--gray",
+        )
+        self.assertEqual(status, 0, errors)
+        data = DataGenerator(str(destination), mode="full")
+        self.assertEqual(
+            data.skeleton_names, ["head", "left_antenna_base", "left_antenna_tip"]
+        )
+        np.testing.assert_array_equal(
+            data.get_images(np.arange(len(data))), frames[::3]
+        )
+        np.testing.assert_array_equal(data.get_keypoints(np.arange(len(data))), -1)
+        with h5py.File(destination, "r") as file:
+            self.assertFalse(file["annotated"][:].any())
+
+        complete = path.read_bytes()
+        # Keep the AVI header and a few frames, but cut the tail before EOF.
+        path.write_bytes(complete[: len(complete) // 2])
+        prior = destination.read_bytes()
+        status, _, errors = invoke(
+            "dataset",
+            "init",
+            destination,
+            "--video",
+            path,
+            "--skeleton",
+            skeleton,
+            "--gray",
+            "--overwrite",
+        )
+        self.assertEqual(status, 1)
+        self.assertIn("reported frames", errors)
+        self.assertEqual(destination.read_bytes(), prior)

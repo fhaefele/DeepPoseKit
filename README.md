@@ -137,11 +137,14 @@ take ordered arrays of names or tables. Augmenters use imgaug classes and
 DeepPoseKit's `FlipAxis`. Callbacks use Keras classes and DeepPoseKit's
 `Logger` and `ModelCheckpoint`. Use the Python API to supply custom objects.
 Commands that create an output require `--overwrite` to replace it.
+Checkpoint callback paths may use Keras placeholders such as `{epoch}`.
+Use a dedicated directory for `BackupAndRestore`. When cleanup is enabled,
+the CLI removes the backup files created by Keras.
 
 For fine-tuning, use compatible labeled annotations and a new output path in
 `fine-tune.toml`. Set `[model].name` for other backbones. Omit architecture
-and confidence map settings to inherit them from the checkpoint. Training uses
-a fresh optimizer. For older checkpoints with incomplete skeleton metadata,
+and confidence map settings to inherit them from the checkpoint. The loaded
+checkpoint supplies the model weights, and training uses a fresh optimizer. For older checkpoints with incomplete skeleton metadata,
 check the original keypoint order and skeleton before fine-tuning.
 
 ```bash

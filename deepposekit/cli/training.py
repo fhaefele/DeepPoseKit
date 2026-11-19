@@ -3,6 +3,8 @@
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from inspect import Parameter, signature
+from math import isfinite
+import os
 from pathlib import Path
 import sys
 import tomllib
@@ -13,7 +15,13 @@ import keras
 import numpy as np
 
 from deepposekit import FlipAxis, callbacks
-from deepposekit.cli.operations import annotation_summary, input_file, output_file
+from deepposekit.cli.operations import (
+    annotation_summary,
+    atomic_output,
+    input_file,
+    output_file,
+)
+from deepposekit.cli.terminal import PlainProgress, colors_enabled
 from deepposekit.io import DataGenerator, TrainingGenerator
 from deepposekit.models import (
     DeepLabCut,
@@ -23,6 +31,7 @@ from deepposekit.models import (
     load_model,
 )
 from deepposekit.models.loading import read_checkpoint_metadata
+from deepposekit.utils.image import resolve_n_transitions
 
 MODELS = {
     model.__name__: model
@@ -103,6 +112,13 @@ def read_training_config(path, *, for_weights=False):
         source, "model", _parameters(MODELS[name], "train_generator") | {"name"}
     )
     model.pop("name", None)
+    for section, options, names in (
+        ("model", model, ("subpixel", "pretrained")),
+        ("generator", generator, ("shuffle", "use_graph")),
+    ):
+        for key in names:
+            if key in options and type(options[key]) is not bool:
+                raise ValueError(f"[{section}].{key} must be a boolean")
     for key in ("pretrained_weights", "weights"):
         if key in model:
             value = model[key]
@@ -217,14 +233,20 @@ def _data_and_generator(config, stored=None):
         ] or None
     if "downsample_factor" in options:
         _integer(options["downsample_factor"], 0, "[generator].downsample_factor")
+    sigma = options.get("sigma", 5)
+    if type(sigma) not in {int, float} or not isfinite(sigma) or sigma <= 0:
+        raise ValueError("[generator].sigma must be a finite positive number")
     return TrainingGenerator(data, **options)
 
 
-def build_model(config):
+def build_model(config, *, initialize_weights=True):
     """Build an uncompiled model with the geometry in a training config."""
-    return MODELS[config.model_name](
-        _data_and_generator(config), **config.model_options
-    )
+    options = dict(config.model_options)
+    if not initialize_weights:
+        parameters = signature(MODELS[config.model_name]).parameters
+        for key in {"pretrained_weights", "weights"} & parameters.keys():
+            options[key] = None
+    return MODELS[config.model_name](_data_and_generator(config), **options)
 
 
 def _keras_option(value, namespace):
@@ -247,16 +269,97 @@ def _keras_option(value, namespace):
     return type(obj).from_config(config)
 
 
+def _initial_weight_paths(config):
+    return [
+        Path(value)
+        for name, value in config.model_options.items()
+        if name in {"pretrained_weights", "weights"} and value not in {None, "imagenet"}
+    ]
+
+
+def _check_callback_path(path, reserved, *, directory=False):
+    resolved = path.resolve()
+    for other in reserved:
+        if (
+            resolved == other
+            or directory
+            and resolved in other.parents
+            or other in resolved.parents
+            or path.exists()
+            and other.exists()
+            and path.samefile(other)
+        ):
+            raise ValueError(
+                f"Callback path conflicts with another input or output: {path}"
+            )
+    return resolved
+
+
+class _TrainingCheckpoint(callbacks.ModelCheckpoint):
+    """Apply CLI output protection to each expanded checkpoint destination."""
+
+    def __init__(self, *, reserved, overwrite, **options):
+        super().__init__(**options)
+        self.reserved = reserved
+        self.overwrite = overwrite
+        self.saved = set()
+
+    def _save_model(self, epoch, batch, logs):
+        path = Path(self._get_file_path(epoch, batch, logs))
+        if not self._should_save_model(epoch, batch, logs, str(path)):
+            return
+        resolved = _check_callback_path(path, self.reserved - self.saved)
+        overwrite = self.overwrite or resolved in self.saved
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if self.save_weights_only:
+            with atomic_output(path, overwrite) as temporary:
+                self.model.train_model.save_weights(temporary)
+        else:
+            self.model.save(path, overwrite=overwrite)
+        self.reserved.add(resolved)
+        self.saved.add(resolved)
+
+
+class _TrainingBackup(keras.callbacks.BackupAndRestore):
+    """Clean up Keras backup files individually in shared directories."""
+
+    @property
+    def files(self):
+        return tuple(
+            Path(name)
+            for name in (
+                self._weights_path,
+                self._training_metadata_path,
+                self._prev_weights_path,
+                self._prev_training_metadata_path,
+            )
+        )
+
+    def on_train_end(self, logs=None):
+        if self.delete_checkpoint:
+            for path in self.files:
+                path.unlink(missing_ok=True)
+            try:
+                Path(self.backup_dir).rmdir()
+            except OSError:
+                # A directory with other files is still useful to its owner.
+                pass
+
+
 def _callback_list(config, selected, overwrite):
-    result = []
     protected = {
-        config.output.resolve(),
-        config.source.resolve(),
-        config.annotations.resolve(),
+        path.resolve()
+        for path in (
+            config.output,
+            config.source,
+            config.annotations,
+            *_initial_weight_paths(config),
+        )
     }
     if selected is not None:
         protected.add(selected.resolve())
-    destinations = set()
+    reserved = set(protected)
+    specs = []
     for name, options in _named_list(
         config.fit_options.get("callbacks", []), "[training].callbacks"
     ):
@@ -270,27 +373,35 @@ def _callback_list(config, selected, overwrite):
             if key not in options:
                 continue
             path = _path(options[key], config.source.parent, f"{name}.{key}")
-            resolved = path.resolve()
-            directory = key in {"log_dir", "backup_dir"}
-            if any(
-                resolved == other
-                or directory
-                and resolved in other.parents
-                or other in resolved.parents
-                for other in protected | destinations
-            ):
-                raise ValueError(
-                    f"{name}.{key} conflicts with another input or output: {path}"
-                )
-            if not overwrite and (
-                "{" in path.name or path.exists() or path.is_symlink()
-            ):
+            options[key] = str(path)
+            if name == "ModelCheckpoint":
+                # Keras expands placeholders for each actual save.
+                continue
+            resolved = _check_callback_path(
+                path, reserved, directory=key in {"log_dir", "backup_dir"}
+            )
+            if not overwrite and os.path.lexists(path):
                 raise FileExistsError(
                     f"{name}.{key} may replace an output: {path}. Use --overwrite or a new destination."
                 )
-            destinations.add(resolved)
-            options[key] = str(path)
-        result.append(callback_type(**options))
+            reserved.add(resolved)
+        specs.append((name, callback_type, options))
+
+    result = []
+    for name, callback_type, options in specs:
+        if name == "ModelCheckpoint":
+            callback = _TrainingCheckpoint(
+                reserved=reserved, overwrite=overwrite, **options
+            )
+        elif name == "BackupAndRestore":
+            callback = _TrainingBackup(**options)
+            for path in callback.files:
+                _check_callback_path(path, protected)
+                if path.is_symlink() or path.exists() and not path.is_file():
+                    raise ValueError(f"Expected a regular backup file at {path}")
+        else:
+            callback = callback_type(**options)
+        result.append(callback)
     return result
 
 
@@ -319,8 +430,13 @@ def _fine_tune(config, source):
         raise ValueError(
             f"[model].name does not match checkpoint model {pose['class_name']}"
         )
+    architecture = pose["config"]
     for key, value in config.model_options.items():
-        if key not in pose["config"] or pose["config"][key] != value:
+        if key in {"pretrained_weights", "weights"}:
+            continue
+        if key == "n_transitions":
+            value = resolve_n_transitions(value, *architecture["image_shape"][:2])
+        if architecture.get(key) != value:
             raise ValueError(
                 f"[model].{key} must match the checkpoint or be omitted when fine-tuning"
             )
@@ -337,11 +453,13 @@ def _fine_tune(config, source):
 def train(args):
     config = read_training_config(args.config)
     selected = input_file(args.init_from) if args.init_from is not None else None
-    protected = [config.source, config.annotations]
+    protected = [config.source, config.annotations, *_initial_weight_paths(config)]
     if selected is not None:
         protected.append(selected)
     output = output_file(config.output, ".keras", args.overwrite, *protected)
-    with redirect_stdout(sys.stderr):
+    colored = colors_enabled(sys.stderr, getattr(args, "color", "auto"))
+    progress = sys.stderr if colored else PlainProgress(sys.stderr)
+    with redirect_stdout(progress):
         model = (
             build_model(config) if selected is None else _fine_tune(config, selected)
         )

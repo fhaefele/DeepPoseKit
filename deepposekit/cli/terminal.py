@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import re
 import sys
 
 from rich.console import Console
@@ -40,6 +41,30 @@ def color_mode(argv):
     return selected
 
 
+def colors_enabled(stream, color):
+    return color == "always" or (
+        color == "auto"
+        and stream.isatty()
+        and "NO_COLOR" not in os.environ
+        and os.environ.get("TERM") != "dumb"
+    )
+
+
+class PlainProgress:
+    """Forward Keras progress to a stream that cannot display terminal colors."""
+
+    _ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, text):
+        return self.stream.write(self._ansi.sub("", text))
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 def console_for(stream, color):
     tty = stream.isatty()
     width = 100
@@ -48,12 +73,7 @@ def console_for(stream, color):
             width = os.get_terminal_size(stream.fileno()).columns or width
         except (AttributeError, OSError, ValueError):
             pass
-    enabled = color == "always" or (
-        color == "auto"
-        and tty
-        and "NO_COLOR" not in os.environ
-        and os.environ.get("TERM") != "dumb"
-    )
+    enabled = colors_enabled(stream, color)
     return Console(
         file=stream,
         width=width,

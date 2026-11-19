@@ -110,6 +110,12 @@ def open_video(path, batch_size, gray):
 def video_batches(reader, batch_size):
     while (batch := reader.read_batch(batch_size, asarray=True)) is not None:
         yield batch
+    # AVI carries an explicit frame count. Other containers can report an
+    # estimate based on duration and average FPS, especially for VFR video.
+    if Path(reader.videopath).suffix.lower() == ".avi" and reader.n_frames > reader.idx:
+        raise OSError(
+            f"Video ended after {reader.idx} of {reader.n_frames} reported frames: {reader.videopath}"
+        )
 
 
 @contextmanager
@@ -224,7 +230,7 @@ def convert(args):
 
         config = read_training_config(args.config, for_weights=True)
         output_file(output, ".keras", args.overwrite, config.annotations)
-        model = build_model(config)
+        model = build_model(config, initialize_weights=False)
         load_legacy_weights(model, source)
     model.save(output, overwrite=args.overwrite)
     print(output)
@@ -239,17 +245,35 @@ def dataset_init(args):
         or not skeleton["name"].is_unique
     ):
         raise ValueError("Skeleton names must be present and unique")
+    for key in ("parent", "swap"):
+        unknown = set(skeleton[key].dropna()) - set(skeleton["name"])
+        if unknown:
+            raise ValueError(
+                f"Unknown skeleton {key} name(s): {', '.join(map(str, sorted(unknown, key=str)))}"
+            )
     graph_to_edges(skeleton["tree"].to_numpy())
-    samples = []
-    with open_video(args.video, 8, args.gray) as reader:
-        index = 0
-        for batch in video_batches(reader, 8):
-            samples.extend(batch[(-index) % args.frame_step :: args.frame_step])
-            index += len(batch)
-    if not samples:
-        raise ValueError("The video contains no readable frames")
     with atomic_output(output, args.overwrite) as temporary:
-        initialize_dataset(str(temporary), np.stack(samples), skeleton)
+        with open_video(args.video, 8, args.gray) as reader:
+            index = 0
+            with ExitStack() as cleanup:
+                file = None
+                for batch in video_batches(reader, 8):
+                    samples = batch[(-index) % args.frame_step :: args.frame_step]
+                    index += len(batch)
+                    if not len(samples):
+                        continue
+                    if file is None:
+                        initialize_dataset(str(temporary), samples, skeleton)
+                        file = cleanup.enter_context(h5py.File(temporary, "r+"))
+                        continue
+                    start = len(file["images"])
+                    end = start + len(samples)
+                    for key in ("images", "annotations", "annotated"):
+                        file[key].resize(end, axis=0)
+                    file["images"][start:end] = samples
+                    file["annotations"][start:end] = -1
+                if file is None:
+                    raise ValueError("The video contains no readable frames")
     print(output)
 
 

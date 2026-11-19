@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from keras import Model
-import numpy as np
 
 from deepposekit.models.engine import BaseModel
 from deepposekit.models.layers.util import ImageNormalization
@@ -92,35 +91,11 @@ class StackedHourglass(BaseModel):
 
     def __init_model__(self):
 
-        max_transitions = np.min(
-            [
-                image_utils.n_downsample(self.train_generator.height),
-                image_utils.n_downsample(self.train_generator.width),
-            ]
+        n_transitions = image_utils.resolve_n_transitions(
+            self.n_transitions, self.train_generator.height, self.train_generator.width
         )
+        self.n_transitions = n_transitions
 
-        n_transitions = self.n_transitions
-        if isinstance(self.n_transitions, (int, np.integer)):
-            if n_transitions == 0:
-                raise ValueError("n_transitions cannot equal zero")
-            if n_transitions < 0:
-                n_transitions += 1
-                n_transitions = max_transitions - np.abs(n_transitions)
-                self.n_transitions = n_transitions
-            elif 0 < n_transitions <= max_transitions:
-                self.n_transitions = n_transitions
-            else:
-                raise ValueError(
-                    "n_transitions must be in range {0} "
-                    "< n_transitions <= "
-                    "{1}".format(-max_transitions + 1, max_transitions)
-                )
-        else:
-            raise TypeError(
-                "n_transitions must be integer in range "
-                "{0} < n_transitions <= "
-                "{1}".format(-max_transitions + 1, max_transitions)
-            )
         if n_transitions <= self.train_generator.downsample_factor:
             raise ValueError(
                 "`n_transitions` <= `downsample_factor`. Increase `n_transitions` or decrease `downsample_factor`."
