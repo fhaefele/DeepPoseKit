@@ -292,6 +292,9 @@ def merge_new_images(
         "skeleton", h5file["skeleton"].shape, dtype=np.int32, data=h5file["skeleton"][:]
     )
 
+    if "skeleton_names" in h5file:
+        h5file.copy("skeleton_names", merged_h5file)
+
     for idx in range(h5file[dataset].shape[0]):
         merged_h5file[dataset][idx] = h5file[dataset][idx]
         merged_h5file["annotations"][idx] = h5file["annotations"][idx]

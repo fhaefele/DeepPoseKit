@@ -2,14 +2,17 @@
 
 from contextlib import ExitStack, redirect_stdout
 from dataclasses import dataclass
+from hashlib import sha256
 from inspect import Parameter, signature
 from math import isfinite
+import json
 import os
 from pathlib import Path
 import sys
 import tomllib
 import warnings
 
+import h5py
 import imgaug.augmenters as iaa
 import keras
 import numpy as np
@@ -347,8 +350,34 @@ class _TrainingBackup(keras.callbacks.BackupAndRestore):
         )
 
     @property
+    def _completed_path(self):
+        return Path(self.backup_dir) / "completed.weights.h5"
+
+    @property
     def files(self):
-        return (path for generation in self._generations for path in generation)
+        yield self._completed_path
+        for generation in self._generations:
+            yield from generation
+
+    def store_completed(self, training_model, run_id):
+        self._completed_path.parent.mkdir(parents=True, exist_ok=True)
+        with atomic_output(self._completed_path, overwrite=True) as temporary:
+            training_model.save_weights(temporary)
+            with h5py.File(temporary, "r+") as weights:
+                weights.attrs["deepposekit_training_run"] = run_id
+        self._written.add(self._completed_path)
+
+    def has_completed(self, run_id):
+        if not self._completed_path.is_file():
+            return False
+        with h5py.File(self._completed_path, "r") as weights:
+            return weights.attrs.get("deepposekit_training_run") == run_id
+
+    def restore_completed(self, training_model):
+        optimizer = training_model.optimizer
+        if optimizer is not None and not optimizer.built:
+            optimizer.build(training_model.trainable_variables)
+        training_model.load_weights(self._completed_path)
 
     def _save_model(self):
         written = [current for current, _ in self._generations]
@@ -364,9 +393,9 @@ class _TrainingBackup(keras.callbacks.BackupAndRestore):
         # Keep the recovery files until publication succeeds.
         return
 
-    def finalize(self):
+    def finalize(self, *, recovered):
         if self.delete_checkpoint:
-            for path in self._written:
+            for path in self.files if recovered else self._written:
                 path.unlink(missing_ok=True)
 
 
@@ -525,6 +554,24 @@ def _fine_tune(config, source):
     return load_model(source, generator=generator, compile=False)
 
 
+def _training_run_id(config, inputs, output):
+    digest = sha256(config.source.read_bytes())
+    identity = []
+    for path in inputs:
+        stat = path.stat()
+        identity.append(
+            (
+                str(path.resolve()),
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+            )
+        )
+    digest.update(json.dumps([str(output.resolve()), identity]).encode())
+    return digest.hexdigest()
+
+
 def train(args):
     config = read_training_config(args.config)
     selected = input_file(args.init_from) if args.init_from is not None else None
@@ -555,12 +602,25 @@ def train(args):
             fit["callbacks"] = _callback_list(
                 config, selected, args.overwrite, resources
             )
-        history = model.fit(**fit)
-        loss = history.history.get("loss", [])
-        if not len(loss) or not np.isfinite(loss).all():
-            raise ValueError("Training did not produce a finite loss")
+        backups = [
+            callback
+            for callback in fit.get("callbacks", ())
+            if isinstance(callback, _TrainingBackup)
+        ]
+        recovered = []
+        if backups:
+            run_id = _training_run_id(config, protected, output)
+            recovered = [backup for backup in backups if backup.has_completed(run_id)]
+        if recovered:
+            recovered[0].restore_completed(model.train_model)
+        else:
+            history = model.fit(**fit)
+            loss = history.history.get("loss", [])
+            if not len(loss) or not np.isfinite(loss).all():
+                raise ValueError("Training did not produce a finite loss")
+            for backup in backups:
+                backup.store_completed(model.train_model, run_id)
         model.save(output, overwrite=args.overwrite)
-        for callback in fit.get("callbacks", ()):
-            if isinstance(callback, _TrainingBackup):
-                callback.finalize()
+        for backup in backups:
+            backup.finalize(recovered=backup in recovered)
     print(output)

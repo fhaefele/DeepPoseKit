@@ -39,6 +39,26 @@ class TerminalTests(unittest.TestCase):
             self.assertEqual(main(["doctor"], cuda_module="deepposekit"), 0)
             setup.assert_not_called()
 
+    def test_cuda_restart_preserves_interpreter_options_for_module_launches(self):
+        original = [
+            sys.executable,
+            "-I",
+            "-O",
+            "-W",
+            "ignore",
+            "-m",
+            "deepposekit",
+            "doctor",
+        ]
+        with (
+            patch.object(sys, "orig_argv", original),
+            patch.object(sys, "argv", ["deepposekit/__main__.py", "doctor"]),
+            patch("_deepposekit_gpu.prepare_cuda") as setup,
+            patch("deepposekit.cli.operations.run"),
+        ):
+            self.assertEqual(console_main(), 0)
+        setup.assert_called_once_with(["-P", *original[1:]])
+
     def test_completion_skips_cuda_setup(self):
         with (
             patch.object(sys, "argv", ["deepposekit", "completion", "bash"]),
@@ -516,6 +536,35 @@ class WorkflowTests(unittest.TestCase):
         expected = self.model.predict(rotated, batch_size=2, verbose=0)
         np.testing.assert_allclose(np.load(output), expected, rtol=1e-6, atol=1e-6)
 
+    def test_example_video_reader_preserves_output_if_avi_is_truncated(self):
+        example = Path(__file__).resolve().parents[1] / "examples" / "videoreader.py"
+        path = self.path / "truncated.avi"
+        writer = VideoWriter(str(path), (64, 64))
+        rng = np.random.default_rng(79)
+        for _ in range(20):
+            writer.write(rng.integers(0, 256, (64, 64, 3), dtype=np.uint8))
+        writer.close()
+        content = path.read_bytes()
+        path.write_bytes(content[: len(content) // 2])
+        output = self.path / "protected.npy"
+        output.write_bytes(b"prior predictions")
+
+        status, _, errors = invoke(
+            "predict",
+            self.checkpoint,
+            path,
+            output,
+            "--overwrite",
+            "--custom-reader",
+            example,
+            "--custom-reader-args",
+            "--gray",
+        )
+
+        self.assertEqual(status, 1)
+        self.assertIn("Truncated AVI", errors)
+        self.assertEqual(output.read_bytes(), b"prior predictions")
+
     def test_custom_reader_arguments_and_cleanup_after_failure(self):
         data = self.path / "input.npy"
         np.save(data, self.images)
@@ -603,6 +652,24 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertEqual(status, 1)
         self.assertIn("skeleton_names", errors)
+
+    def test_fine_tune_after_merging_new_images_keeps_skeleton_names(self):
+        from deepposekit.io.utils import merge_new_images
+
+        expanded = self.path / "expanded.h5"
+        merge_new_images(str(self.annotations), str(expanded), self.images[:1])
+        self.assertEqual(DataGenerator(str(expanded)).skeleton_names, ["head", "tail"])
+        config = self.path / "expanded.toml"
+        config.write_text(
+            self.config.read_text()
+            .replace("annotations.h5", expanded.name)
+            .replace("model.keras", "expanded.keras")
+        )
+
+        status, _, errors = invoke("train", config, "--init-from", self.checkpoint)
+
+        self.assertEqual(status, 0, errors)
+        self.assertTrue((self.path / "expanded.keras").is_file())
 
     def test_invalid_training_geometry_leaves_existing_output(self):
         config = self.path / "invalid.toml"
@@ -804,14 +871,33 @@ class WorkflowTests(unittest.TestCase):
                 '"TerminateOnNaN"', '{name="BackupAndRestore", backup_dir="recovery"}'
             )
         )
+        expected_weights = []
+
+        def fail_publication(model, *args, **kwargs):
+            expected_weights.extend(model.train_model.get_weights())
+            raise FileExistsError("concurrent output")
+
         with patch.object(
-            BaseModel, "save", side_effect=FileExistsError("concurrent output")
+            BaseModel, "save", autospec=True, side_effect=fail_publication
         ):
             status, _, errors = invoke("train", config)
         self.assertEqual(status, 1)
         self.assertIn("concurrent output", errors)
-        self.assertTrue((self.path / "recovery" / "latest.weights.h5").is_file())
-        self.assertTrue((self.path / "recovery" / "training_metadata.json").is_file())
+        backup = self.path / "recovery"
+        self.assertTrue((backup / "latest.weights.h5").is_file())
+        self.assertTrue((backup / "training_metadata.json").is_file())
+        self.assertTrue((backup / "completed.weights.h5").is_file())
+        with patch.object(
+            BaseModel, "fit", side_effect=AssertionError("unexpected fit")
+        ):
+            status, _, errors = invoke("train", config, "--overwrite")
+        self.assertEqual(status, 0, errors)
+        model = load_model(self.path / "recovery.keras", compile=True)
+        self.assertEqual(int(model.train_model.optimizer.iterations), 1)
+        self.assertEqual(len(model.train_model.get_weights()), len(expected_weights))
+        for actual, expected in zip(model.train_model.get_weights(), expected_weights):
+            np.testing.assert_array_equal(actual, expected)
+        self.assertFalse(list(backup.iterdir()))
 
     def test_fine_tune_reuses_normalized_leap_constructor_options(self):
         config = self.path / "leap.toml"

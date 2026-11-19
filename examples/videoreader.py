@@ -29,7 +29,7 @@ def _batches(path, batch_size, gray, quarter_turns):
     try:
         if not reader.isOpened():
             raise OSError(f"Could not open video: {path}")
-        while (frames := reader.read_batch(batch_size, asarray=True)) is not None:
+        for frames in reader.iter_batches():
             yield np.ascontiguousarray(np.rot90(frames, quarter_turns, axes=(1, 2)))
     finally:
         reader.close()

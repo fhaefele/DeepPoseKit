@@ -125,41 +125,6 @@ def open_video(path, batch_size, gray):
         reader.close()
 
 
-def _truncated_avi(path):
-    """Check declared RIFF lengths, including the continuation chunks in OpenDML AVI."""
-    if path.suffix.lower() != ".avi":
-        return False
-    with path.open("rb") as file:
-        length = file.seek(0, os.SEEK_END)
-        offset = 0
-        kind = b"AVI "
-        while offset + 12 <= length:
-            file.seek(offset)
-            header = file.read(12)
-            if header[:4] != b"RIFF" or header[8:] != kind:
-                return False
-            size = int.from_bytes(header[4:8], "little")
-            if size < 4:
-                return False
-            end = offset + 8 + size
-            if end > length:
-                return True
-            offset = end + (size % 2)
-            kind = b"AVIX"
-    return False
-
-
-def video_batches(reader, batch_size):
-    while (batch := reader.read_batch(batch_size, asarray=True)) is not None:
-        yield batch
-    # Timing gaps can make OpenCV's reported count exceed the decoded frame
-    # count. Treat a short read as failure when AVI container lengths confirm it.
-    if reader.n_frames > reader.idx and _truncated_avi(Path(reader.videopath)):
-        raise OSError(
-            f"Truncated AVI ended after {reader.idx} of {reader.n_frames} reported frames: {reader.videopath}"
-        )
-
-
 @contextmanager
 def custom_reader_module(path):
     if path is None:
@@ -217,7 +182,7 @@ def _prediction_streams(module, argv):
 def prediction_reader(args, path, opener):
     if opener is None:
         with open_video(path, args.batch_size, args.gray) as reader:
-            yield video_batches(reader, args.batch_size)
+            yield reader.iter_batches()
         return
     reader = opener(path, batch_size=args.batch_size)
     with ExitStack() as cleanup:
@@ -504,7 +469,7 @@ def dataset_init(args):
             index = 0
             with ExitStack() as cleanup:
                 file = None
-                for batch in video_batches(reader, 8):
+                for batch in reader.iter_batches():
                     samples = batch[(-index) % args.frame_step :: args.frame_step]
                     index += len(batch)
                     if not len(samples):

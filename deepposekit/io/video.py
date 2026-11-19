@@ -13,12 +13,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+
 from keras.utils import PyDataset
 import cv2
 import numpy as np
 import os
 
 __all__ = ["VideoReader", "VideoWriter"]
+
+
+def _truncated_avi(path):
+    """Check RIFF lengths, including the continuation chunks in OpenDML AVI."""
+    if path.suffix.lower() != ".avi":
+        return False
+    with path.open("rb") as file:
+        length = file.seek(0, os.SEEK_END)
+        offset = 0
+        kind = b"AVI "
+        while offset + 12 <= length:
+            file.seek(offset)
+            header = file.read(12)
+            if header[:4] != b"RIFF" or header[8:] != kind:
+                return False
+            size = int.from_bytes(header[4:8], "little")
+            if size < 4:
+                return False
+            end = offset + 8 + size
+            if end > length:
+                return True
+            offset = end + (size % 2)
+            kind = b"AVIX"
+    return False
 
 
 class VideoReader(PyDataset):
@@ -107,6 +133,16 @@ class VideoReader(PyDataset):
             return frames
         else:
             return
+
+    def iter_batches(self):
+        """Decode the remaining frames in batches and report truncated AVI input."""
+        while (batch := self.read_batch(self.batch_size, asarray=True)) is not None:
+            yield batch
+        # Timing gaps can make the reported count exceed the decoded count.
+        if self.n_frames > self.idx and _truncated_avi(Path(self.videopath)):
+            raise OSError(
+                f"Truncated AVI ended after {self.idx} of {self.n_frames} reported frames: {self.videopath}"
+            )
 
     def close(self):
         """ Close the VideoReader.
