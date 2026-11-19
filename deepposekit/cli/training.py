@@ -1,6 +1,6 @@
 """Declarative configuration for existing DeepPoseKit training APIs."""
 
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from dataclasses import dataclass
 from inspect import Parameter, signature
 from math import isfinite
@@ -21,7 +21,7 @@ from deepposekit.cli.operations import (
     input_file,
     output_file,
 )
-from deepposekit.cli.terminal import PlainProgress, colors_enabled
+from deepposekit.cli.terminal import TrainingProgress, colors_enabled
 from deepposekit.io import DataGenerator, TrainingGenerator
 from deepposekit.models import (
     DeepLabCut,
@@ -113,7 +113,11 @@ def read_training_config(path, *, for_weights=False):
     )
     model.pop("name", None)
     for section, options, names in (
-        ("model", model, ("subpixel", "pretrained")),
+        (
+            "model",
+            model,
+            ("subpixel", "pretrained", "upsampling", "batchnorm", "use_bias"),
+        ),
         ("generator", generator, ("shuffle", "use_graph")),
     ):
         for key in names:
@@ -311,42 +315,86 @@ class _TrainingCheckpoint(callbacks.ModelCheckpoint):
         resolved = _check_callback_path(path, self.reserved - self.saved)
         overwrite = self.overwrite or resolved in self.saved
         path.parent.mkdir(parents=True, exist_ok=True)
-        if self.save_weights_only:
-            with atomic_output(path, overwrite) as temporary:
-                self.model.train_model.save_weights(temporary)
-        else:
-            self.model.save(path, overwrite=overwrite)
+        try:
+            if self.save_weights_only:
+                with atomic_output(path, overwrite) as temporary:
+                    self.model.train_model.save_weights(temporary)
+            else:
+                self.model.save(path, overwrite=overwrite)
+        except FileExistsError as error:
+            raise FileExistsError(
+                f"Checkpoint already exists: {path}. Use --overwrite or a new destination."
+            ) from error
         self.reserved.add(resolved)
         self.saved.add(resolved)
 
 
 class _TrainingBackup(keras.callbacks.BackupAndRestore):
-    """Clean up Keras backup files individually in shared directories."""
+    """Clean up the backup generation written by this training run."""
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self._written = set()
+
+    @property
+    def _generations(self):
+        return (
+            (Path(self._weights_path), Path(self._prev_weights_path)),
+            (
+                Path(self._training_metadata_path),
+                Path(self._prev_training_metadata_path),
+            ),
+        )
 
     @property
     def files(self):
-        return tuple(
-            Path(name)
-            for name in (
-                self._weights_path,
-                self._training_metadata_path,
-                self._prev_weights_path,
-                self._prev_training_metadata_path,
+        return (path for generation in self._generations for path in generation)
+
+    def _save_model(self):
+        written = [current for current, _ in self._generations]
+        if self.double_checkpoint:
+            written.extend(
+                previous for current, previous in self._generations if current.exists()
             )
-        )
+        super()._save_model()
+        self._written.update(written)
 
     def on_train_end(self, logs=None):
         if self.delete_checkpoint:
-            for path in self.files:
+            for path in self._written:
                 path.unlink(missing_ok=True)
-            try:
-                Path(self.backup_dir).rmdir()
-            except OSError:
-                # A directory with other files is still useful to its owner.
-                pass
+            _discard_empty_directory(Path(self.backup_dir))
 
 
-def _callback_list(config, selected, overwrite):
+def _discard_empty_directory(path):
+    try:
+        path.rmdir()
+    except OSError:
+        # Preserve any directory that still contains output or prior backup files.
+        pass
+
+
+def _discard_empty_file(path, created):
+    current = path.stat(follow_symlinks=False) if os.path.lexists(path) else None
+    if (
+        current is not None
+        and current.st_size == 0
+        and os.path.samestat(current, created)
+    ):
+        path.unlink(missing_ok=True)
+
+
+def _reserve_callback_path(path, directory, resources):
+    if directory:
+        path.mkdir(parents=True, exist_ok=False)
+        resources.callback(_discard_empty_directory, path)
+    else:
+        with path.open("xb") as file:
+            created = os.fstat(file.fileno())
+        resources.callback(_discard_empty_file, path, created)
+
+
+def _callback_list(config, selected, overwrite, resources):
     protected = {
         path.resolve()
         for path in (
@@ -360,6 +408,7 @@ def _callback_list(config, selected, overwrite):
         protected.add(selected.resolve())
     reserved = set(protected)
     specs = []
+    destinations = []
     for name, options in _named_list(
         config.fit_options.get("callbacks", []), "[training].callbacks"
     ):
@@ -377,15 +426,24 @@ def _callback_list(config, selected, overwrite):
             if name == "ModelCheckpoint":
                 # Keras expands placeholders for each actual save.
                 continue
-            resolved = _check_callback_path(
-                path, reserved, directory=key in {"log_dir", "backup_dir"}
-            )
+            directory = key in {"log_dir", "backup_dir"}
+            resolved = _check_callback_path(path, reserved, directory=directory)
             if not overwrite and os.path.lexists(path):
                 raise FileExistsError(
                     f"{name}.{key} may replace an output: {path}. Use --overwrite or a new destination."
                 )
             reserved.add(resolved)
+            destinations.append((path, directory))
         specs.append((name, callback_type, options))
+
+    if not overwrite:
+        for path, directory in destinations:
+            try:
+                _reserve_callback_path(path, directory, resources)
+            except FileExistsError as error:
+                raise FileExistsError(
+                    f"Callback output is already in use: {path}"
+                ) from error
 
     result = []
     for name, callback_type, options in specs:
@@ -431,15 +489,29 @@ def _fine_tune(config, source):
             f"[model].name does not match checkpoint model {pose['class_name']}"
         )
     architecture = pose["config"]
-    for key, value in config.model_options.items():
-        if key in {"pretrained_weights", "weights"}:
-            continue
-        if key == "n_transitions":
-            value = resolve_n_transitions(value, *architecture["image_shape"][:2])
-        if architecture.get(key) != value:
-            raise ValueError(
-                f"[model].{key} must match the checkpoint or be omitted when fine-tuning"
+    model_type = MODELS[config.model_name]
+    supplied = {
+        name: value
+        for name, value in config.model_options.items()
+        if name not in {"pretrained_weights", "weights"}
+    }
+    if supplied:
+        original = {
+            name: architecture[name]
+            for name in _parameters(model_type, "train_generator") & architecture.keys()
+        }
+        expected = model_type(None, skip_init=True, **original).get_config()
+        candidate = original | supplied
+        if "n_transitions" in candidate:
+            candidate["n_transitions"] = resolve_n_transitions(
+                candidate["n_transitions"], *architecture["image_shape"][:2]
             )
+        actual = model_type(None, skip_init=True, **candidate).get_config()
+        for key in sorted(supplied):
+            if key not in actual or actual[key] != expected.get(key):
+                raise ValueError(
+                    f"[model].{key} must match the checkpoint or be omitted when fine-tuning"
+                )
     stored = metadata["train_generator_config"]["config"]
     if "skeleton" not in stored or "skeleton_names" not in stored:
         warnings.warn(
@@ -458,8 +530,9 @@ def train(args):
         protected.append(selected)
     output = output_file(config.output, ".keras", args.overwrite, *protected)
     colored = colors_enabled(sys.stderr, getattr(args, "color", "auto"))
-    progress = sys.stderr if colored else PlainProgress(sys.stderr)
-    with redirect_stdout(progress):
+    progress = TrainingProgress(sys.stderr, colored)
+    with redirect_stdout(progress), ExitStack() as resources:
+        resources.callback(progress.finish)
         model = (
             build_model(config) if selected is None else _fine_tune(config, selected)
         )
@@ -476,7 +549,9 @@ def train(args):
         model.compile(**compile_options)
         fit = dict(config.fit_options)
         if "callbacks" in fit:
-            fit["callbacks"] = _callback_list(config, selected, args.overwrite)
+            fit["callbacks"] = _callback_list(
+                config, selected, args.overwrite, resources
+            )
         history = model.fit(**fit)
         loss = history.history.get("loss", [])
         if not len(loss) or not np.isfinite(loss).all():

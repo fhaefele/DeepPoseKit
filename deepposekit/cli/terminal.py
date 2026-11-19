@@ -50,16 +50,26 @@ def colors_enabled(stream, color):
     )
 
 
-class PlainProgress:
-    """Forward Keras progress to a stream that cannot display terminal colors."""
+class TrainingProgress:
+    """Apply CLI colors and keep subsequent diagnostics on their own line."""
 
     _ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
-    def __init__(self, stream):
+    def __init__(self, stream, colored):
         self.stream = stream
+        self.colored = colored
+        self.line_complete = True
 
     def write(self, text):
-        return self.stream.write(self._ansi.sub("", text))
+        styled = text if self.colored else self._ansi.sub("", text)
+        if styled:
+            self.stream.write(styled)
+            self.line_complete = styled.endswith("\n")
+        return len(text)
+
+    def finish(self):
+        if not self.line_complete:
+            self.stream.write("\n")
 
     def __getattr__(self, name):
         return getattr(self.stream, name)

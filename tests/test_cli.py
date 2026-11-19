@@ -1,4 +1,4 @@
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from io import StringIO
 import json
 import os
@@ -14,7 +14,7 @@ import numpy as np
 from rich.text import Text
 
 from deepposekit.cli import main
-from deepposekit.io import DataGenerator, VideoWriter
+from deepposekit.io import DataGenerator, VideoReader, VideoWriter
 from deepposekit.models import load_model
 
 
@@ -360,6 +360,8 @@ class WorkflowTests(unittest.TestCase):
         shared.mkdir()
         unrelated = shared / "keep"
         unrelated.write_text("unrelated contents")
+        inactive = shared / "latest.weights.h5.bkp"
+        inactive.write_bytes(b"previous generation")
         config = self.path / "backup.toml"
         content = self.config.read_text().replace("model.keras", "backup.keras")
         checkpoint = (
@@ -371,13 +373,18 @@ class WorkflowTests(unittest.TestCase):
         status, _, errors = invoke("train", config)
         self.assertEqual(status, 1)
         self.assertEqual(first.read_bytes(), b"existing output")
+        self.assertIn("--overwrite", errors)
+        self.assertTrue(
+            any(line.startswith("deepposekit: error:") for line in errors.splitlines())
+        )
         config.write_text(
             content.replace('"TerminateOnNaN"', f"{checkpoint}, {backup}")
         )
         status, _, errors = invoke("train", config, "--overwrite")
         self.assertEqual(status, 0, errors)
         load_model(first, compile=False)
-        self.assertEqual(list(shared.iterdir()), [unrelated])
+        self.assertEqual(set(shared.iterdir()), {unrelated, inactive})
+        self.assertEqual(inactive.read_bytes(), b"previous generation")
         self.assertEqual(unrelated.read_text(), "unrelated contents")
 
     def test_dataset_init_keeps_full_names_and_streams_frame_sampling(self):
@@ -418,6 +425,30 @@ class WorkflowTests(unittest.TestCase):
             self.assertFalse(file["annotated"][:].any())
 
         complete = path.read_bytes()
+        with patch(
+            "deepposekit.cli.operations.VideoReader", wraps=VideoReader
+        ) as wrapper:
+
+            def overestimated_reader(*args, **kwargs):
+                reader = VideoReader(*args, **kwargs)
+                reader.n_frames += 10
+                return reader
+
+            wrapper.side_effect = overestimated_reader
+            status, _, errors = invoke(
+                "dataset",
+                "init",
+                destination,
+                "--video",
+                path,
+                "--skeleton",
+                skeleton,
+                "--frame-step",
+                3,
+                "--gray",
+                "--overwrite",
+            )
+            self.assertEqual(status, 0, errors)
         # Keep the AVI header and a few frames, but cut the tail before EOF.
         path.write_bytes(complete[: len(complete) // 2])
         prior = destination.read_bytes()
@@ -435,3 +466,39 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("reported frames", errors)
         self.assertEqual(destination.read_bytes(), prior)
+
+    def test_static_callback_paths_are_reserved_before_keras_opens_them(self):
+        from deepposekit.cli.training import _callback_list, read_training_config
+
+        first = self.path / "callbacks-first.toml"
+        second = self.path / "callbacks-second.toml"
+        content = self.config.read_text().replace(
+            '"TerminateOnNaN"', '{name="CSVLogger", filename="shared-metrics.csv"}'
+        )
+        first.write_text(content)
+        second.write_text(content.replace("model.keras", "second.keras"))
+        reserved = self.path / "shared-metrics.csv"
+        with ExitStack() as resources:
+            _callback_list(read_training_config(first), None, False, resources)
+            self.assertTrue(reserved.exists())
+            with ExitStack() as other, self.assertRaises(FileExistsError):
+                _callback_list(read_training_config(second), None, False, other)
+        self.assertFalse(reserved.exists())
+
+    def test_fine_tune_reuses_normalized_leap_constructor_options(self):
+        config = self.path / "leap.toml"
+        content = (
+            '[data]\nannotations = "annotations.h5"\n'
+            "[generator]\ndownsample_factor = 0\nuse_graph = false\n"
+            '[model]\nname = "LEAP"\nfilters = 4\nbatchnorm = true\nuse_bias = true\n'
+            "[training]\nbatch_size = 2\nsteps_per_epoch = 1\nverbose = 2\n"
+            '[output]\ncheckpoint = "leap.keras"\n'
+        )
+        config.write_text(content)
+        status, _, errors = invoke("train", config)
+        self.assertEqual(status, 0, errors)
+        checkpoint = self.path / "leap.keras"
+        config.write_text(content.replace("leap.keras", "leap-fine-tuned.keras"))
+        status, _, errors = invoke("train", config, "--init-from", checkpoint)
+        self.assertEqual(status, 0, errors)
+        self.assertTrue((self.path / "leap-fine-tuned.keras").is_file())
