@@ -108,9 +108,40 @@ class LegacyStackedDenseNetTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "weights-only"):
             load_model(self.weights, compile=False)
         with TemporaryDirectory() as temporary:
-            checkpoint = Path(temporary) / "missing-metadata.h5"
+            directory = Path(temporary)
+            unrelated = directory / "unrelated.h5"
+            with h5py.File(unrelated, "w") as file:
+                file.create_dataset("images", data=[0])
+            with self.assertRaisesRegex(
+                ValueError, "Unsupported HDF5 checkpoint layout"
+            ):
+                load_model(unrelated, compile=False)
+
+            chunked_weights = directory / "chunked.hdf5"
+            shutil.copyfile(self.weights, chunked_weights)
+            with h5py.File(chunked_weights, "r+") as file:
+                layer_names = file.attrs.pop("layer_names")
+                midpoint = len(layer_names) // 2
+                file.attrs["layer_names0"] = layer_names[:midpoint]
+                file.attrs["layer_names1"] = layer_names[midpoint:]
+            with self.assertRaisesRegex(ValueError, "weights-only"):
+                load_model(chunked_weights, compile=False)
+
+            checkpoint = directory / "missing-metadata.h5"
             shutil.copyfile(self.full, checkpoint)
             with h5py.File(checkpoint, "r+") as file:
+                model_config = file.attrs.pop("model_config")
+            with self.assertRaisesRegex(ValueError, "Missing model_config"):
+                load_model(checkpoint, compile=False)
+
+            with h5py.File(checkpoint, "r+") as file:
+                file.attrs["model_config"] = model_config
+                file.move("model_weights", "backup_weights")
+            with self.assertRaisesRegex(ValueError, "Missing or invalid model_weights"):
+                load_model(checkpoint, compile=False)
+
+            with h5py.File(checkpoint, "r+") as file:
+                file.move("backup_weights", "model_weights")
                 del file.attrs["pose_model_config"]
             with self.assertRaisesRegex(ValueError, "pose_model_config"):
                 load_model(checkpoint, compile=False)
