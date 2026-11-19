@@ -25,6 +25,20 @@ from deepposekit.io.BaseGenerator import BaseGenerator
 __all__ = ["DataGenerator"]
 
 
+def read_skeleton_names(file, count):
+    names = file.get("skeleton_names")
+    if not (
+        isinstance(names, h5py.Dataset)
+        and names.shape == (count,)
+        and h5py.check_string_dtype(names.dtype) is not None
+    ):
+        return None
+    values = names.asstr(encoding="utf-8", errors="replace")[:].tolist()
+    if all(value and "\ufffd" not in value for value in values) and len(set(values)) == count:
+        return values
+    return None
+
+
 class DataGenerator(BaseGenerator):
     """
     Creates a data generator for accessing an annotation set.
@@ -46,14 +60,14 @@ class DataGenerator(BaseGenerator):
 
         # Check annotations file
         if isinstance(datapath, str):
-            if datapath.endswith(".h5"):
+            if datapath.lower().endswith((".h5", ".hdf5")):
                 if os.path.exists(datapath):
                     self.datapath = datapath
                 else:
                     raise ValueError("datapath file or " "directory does not exist")
 
             else:
-                raise ValueError("datapath must be .h5 file")
+                raise ValueError("datapath must be an .h5 or .hdf5 file")
         else:
             raise TypeError("datapath must be type `str`")
 
@@ -93,25 +107,12 @@ class DataGenerator(BaseGenerator):
             # Initialize skeleton attributes
             self.graph = h5file["skeleton"][:, 0]
             self.swap_index = h5file["skeleton"][:, 1]
-            self.skeleton_names = None
-            names = h5file.get("skeleton_names")
-            if names is not None:
-                if (
-                    isinstance(names, h5py.Dataset)
-                    and names.shape == (self.n_keypoints,)
-                    and h5py.check_string_dtype(names.dtype) is not None
-                ):
-                    values = names.asstr(encoding="utf-8", errors="replace")[:].tolist()
-                    if (
-                        all(value and "\ufffd" not in value for value in values)
-                        and len(set(values)) == self.n_keypoints
-                    ):
-                        self.skeleton_names = values
-                if self.skeleton_names is None:
-                    warnings.warn(
-                        "Annotation file contains incomplete or ambiguous skeleton names.",
-                        stacklevel=2,
-                    )
+            self.skeleton_names = read_skeleton_names(h5file, self.n_keypoints)
+            if "skeleton_names" in h5file and self.skeleton_names is None:
+                warnings.warn(
+                    "Annotation file contains incomplete or ambiguous skeleton names.",
+                    stacklevel=2,
+                )
 
         super(DataGenerator, self).__init__(**kwargs)
 

@@ -7,6 +7,7 @@ from itertools import chain
 from tempfile import TemporaryFile
 
 import cv2
+import h5py
 import numpy as np
 
 from deepposekit.cli.annotation_tools import read_skeleton
@@ -17,7 +18,7 @@ from deepposekit.cli.operations import (
     output_file,
 )
 from deepposekit.cli.render import display_or_save, require_display, skeleton_edges
-from deepposekit.io import DataGenerator
+from deepposekit.io.DataGenerator import read_skeleton_names
 
 
 def _load_predictions(path):
@@ -45,8 +46,18 @@ def _skeleton(path, keypoints):
         data = read_skeleton(path)
         graph, names = data["tree"].to_numpy(), data["name"].tolist()
     else:
-        data = DataGenerator(str(input_file(path)), mode="full")
-        graph, names = data.graph, data.skeleton_names
+        with h5py.File(input_file(path), "r") as file:
+            skeleton = file.get("skeleton")
+            if (
+                not isinstance(skeleton, h5py.Dataset)
+                or skeleton.ndim != 2
+                or skeleton.shape[1] != 2
+            ):
+                raise ValueError(
+                    "Expected annotation skeleton with parent and swap columns"
+                )
+            graph = skeleton[:, 0]
+            names = read_skeleton_names(file, len(graph))
     if len(graph) != keypoints:
         raise ValueError("Skeleton and prediction keypoint counts differ")
     return skeleton_edges(graph), names

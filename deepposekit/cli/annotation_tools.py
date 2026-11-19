@@ -1,7 +1,7 @@
 """Sample, extend, and prefill annotation datasets."""
 
 import csv
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from itertools import zip_longest
 from math import isqrt
 from shutil import copyfile
@@ -80,7 +80,7 @@ def _diverse_indices(args):
         )
     frames, features = zip(*candidates, strict=True)
     fitter = MiniBatchKMeans(
-        n_clusters=isqrt(args.count),
+        n_clusters=min(args.count, max(2, isqrt(args.count))),
         n_init=3,
         random_state=int(rng.integers(2**32)),
     )
@@ -117,6 +117,8 @@ def _write_dataset(temporary, batches, skeleton):
     with ExitStack() as cleanup:
         file = None
         for samples in batches:
+            if samples.dtype != np.uint8:
+                raise ValueError("Annotation images must have dtype uint8")
             if file is None:
                 initialize_dataset(str(temporary), samples, skeleton)
                 file = cleanup.enter_context(h5py.File(temporary, "r+"))
@@ -184,6 +186,32 @@ def _frame_indices(path):
     return indices
 
 
+@contextmanager
+def _annotation_copy(source, destination, dataset):
+    copyfile(source, destination)
+    with h5py.File(source, "r") as original, h5py.File(destination, "r+") as output:
+        _local_arrays(original, dataset)
+        _local_arrays(output, dataset)
+        # Resolve external skeleton objects relative to the source before relocation.
+        for key in ("skeleton", "skeleton_names"):
+            if key not in original:
+                continue
+            data = original[key]
+            if not isinstance(data, h5py.Dataset):
+                continue
+            if (
+                data.file.id == original.id
+                and not data.external
+                and not data.is_virtual
+            ):
+                continue
+            del output[key]
+            inline = output.create_dataset(key, data=data[:], dtype=data.dtype)
+            for name, value in data.attrs.items():
+                inline.attrs[name] = value
+        yield output
+
+
 def _local_arrays(file, dataset):
     arrays = tuple(file[key] for key in (dataset, "annotations", "annotated"))
     for array in arrays:
@@ -234,12 +262,10 @@ def append(args):
     annotation_summary(args.annotations, args.dataset)
     indices = _frame_indices(args.frames)
     with atomic_output(output, args.overwrite) as temporary:
-        copyfile(args.annotations, temporary)
         with (
-            h5py.File(temporary, "r+") as file,
+            _annotation_copy(args.annotations, temporary, args.dataset) as file,
             frame_batches(args, args.source) as batches,
         ):
-            _local_arrays(file, args.dataset)
             start = len(file[args.dataset])
             end = start + len(indices)
             for key in (args.dataset, "annotations", "annotated"):
@@ -270,8 +296,7 @@ def prelabel(args):
     if data.keypoints_shape[0] != model.predict_model.output_shape[1]:
         raise ValueError("Checkpoint and annotations have different keypoint counts")
     with atomic_output(output, args.overwrite) as temporary:
-        copyfile(args.annotations, temporary)
-        with h5py.File(temporary, "r+") as file:
+        with _annotation_copy(args.annotations, temporary, args.dataset) as file:
             images, points, reviewed = _local_arrays(file, args.dataset)
             for start in range(0, len(images), args.batch_size):
                 end = start + args.batch_size

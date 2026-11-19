@@ -13,6 +13,11 @@ from deepposekit.cli.components import builtin_class, named_list
 
 _EXAMPLES = {
     "Affine": {"rotate": 5},
+    "BlendAlpha": {
+        "factor": 0.5,
+        "foreground": [{"name": "GaussianBlur", "sigma": 0.5}],
+    },
+    "Sometimes": {"p": 0.5, "then_list": [{"name": "Affine", "rotate": 5}]},
     "FlipAxis": {"axis": 1, "p": 0.5},
     "GaussianBlur": {"sigma": 0.5},
     "Fliplr": {"p": 0.5},
@@ -25,7 +30,7 @@ _EXAMPLES = {
 
 def _augmenter(data, name, options):
     options = dict(options)
-    for key in ("children", "then_list", "else_list"):
+    for key in ("children", "then_list", "else_list", "foreground", "background"):
         if key in options:
             options[key] = [
                 _augmenter(data, *spec)
@@ -59,33 +64,61 @@ def _list():
 
 
 def _example_options(name):
-    if name == "FlipAxis":
-        return _EXAMPLES[name]
-    constructor = builtin_class(iaa, name, iaa.Augmenter)
     options = _EXAMPLES.get(name, {})
-    try:
-        signature(constructor).bind(**options)
-    except (TypeError, ValueError) as error:
-        raise ValueError(
-            f"{name} needs additional parameters. See the imgaug documentation for its options."
-        ) from error
-    return options
+    if name != "FlipAxis":
+        constructor = builtin_class(iaa, name, iaa.Augmenter)
+        try:
+            signature(constructor).bind(**options)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"{name} needs additional parameters. See the imgaug documentation for its options."
+            ) from error
+    # Signature defaults can still be invalid or rely on removed NumPy APIs.
+    # Test the exact generated spec with images and keypoints before advertising it.
+    points = np.array([[[8.0, 12.0], [20.0, 24.0]]])
+    swap = np.array([1, 0])
+    for channels in (1, 3):
+        try:
+            pipeline = iaa.Sequential([_augmenter(swap, name, options)])
+            pipeline.seed_(17)
+            pipeline(
+                images=np.zeros((1, 32, 32, channels), dtype=np.uint8),
+                keypoints=points.copy(),
+            )
+        except (
+            AssertionError,
+            AttributeError,
+            ImportError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+        ) as error:
+            last_error = error
+        else:
+            return options
+    raise ValueError(
+        f"No working starter TOML for {name} with the installed imgaug: {last_error}"
+    ) from last_error
+
+
+def _toml_value(value):
+    if isinstance(value, dict):
+        return (
+            "{ "
+            + ", ".join(f"{key} = {_toml_value(item)}" for key, item in value.items())
+            + " }"
+        )
+    if isinstance(value, list):
+        return "[" + ", ".join(map(_toml_value, value)) + "]"
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _toml(names):
-    examples = []
-    for name in names:
-        options = {"name": name, **_example_options(name)}
-        examples.append(
-            ", ".join(
-                f"{key} = {json.dumps(value, ensure_ascii=False)}"
-                for key, value in options.items()
-            )
-        )
+    examples = [_toml_value({"name": name, **_example_options(name)}) for name in names]
     print("[generator]")
     print("augmenter = [")
     for example in examples:
-        print(f"  {{ {example} }},")
+        print(f"  {example},")
     print("]")
 
 
@@ -137,11 +170,14 @@ def _variants(pipeline, image, points, samples):
         yield f"Sample {index}", augmented[0], keypoints[0]
 
 
-def _draw_panel(axis, image, points, edges, title):
+def _draw_panel(axis, image, points, edges, title, *, rgb):
     height, width = image.shape[:2]
     if image.shape[-1] == 1:
         axis.imshow(image[..., 0], cmap="gray", vmin=0, vmax=255)
     else:
+        if not rgb and image.shape[-1] in (3, 4):
+            order = [2, 1, 0] if image.shape[-1] == 3 else [2, 1, 0, 3]
+            image = image[..., order]
         axis.imshow(image)
     valid = np.all(
         np.isfinite(points) & (points >= 0) & (points < (width, height)), axis=1
@@ -170,6 +206,8 @@ def _preview(args):
         "full": data.index,
     }[mode]
     if args.frame is None:
+        if mode == "full" and data.n_annotated:
+            eligible = data.annotated_index
         if not len(eligible):
             raise ValueError(f"The annotation dataset has no frames in {mode} mode")
         frame = int(eligible[0])
@@ -203,7 +241,7 @@ def _preview(args):
         for axis, (title, panel, coordinates) in zip(
             axes.flat, _variants(pipeline, image, points, args.samples), strict=False
         ):
-            _draw_panel(axis, panel, coordinates, edges, title)
+            _draw_panel(axis, panel, coordinates, edges, title, rgb=args.rgb)
         for axis in list(axes.flat)[args.samples + 1 :]:
             axis.set_axis_off()
         figure.suptitle(f"Frame {frame}")

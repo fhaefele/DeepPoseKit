@@ -106,6 +106,12 @@ class ReviewTools(unittest.TestCase):
             grids.append(output.read_bytes())
         self.assertTrue(all(grid == grids[0] for grid in grids))
         self.assertEqual(invoke("imgaug", "toml", "NoSuchAugmenter")[0], 1)
+        nested = self.succeeds("imgaug", "toml", "BlendAlpha")
+        (entry,) = tomllib.loads(nested)["generator"]["augmenter"]
+        self.assertEqual(entry["foreground"][0]["name"], "GaussianBlur")
+        self.assertEqual(invoke("imgaug", "toml", "SomeOf")[0], 1)
+        with self.assertRaisesRegex(ValueError, "axis must be"):
+            build_augmenters(data, [{"name": "FlipAxis", "axis": 2, "p": 1.0}])
 
     def test_saved_overlay_geometry_trace_and_failed_replacement(self):
         reader = self.path / "reader.py"
@@ -274,11 +280,13 @@ class ReviewTools(unittest.TestCase):
         checkpoint = self.path / "model.keras"
         model.save(checkpoint)
         expected = model.predict_on_batch(self.images)[..., :2]
-        output = self.path / "prelabeled.h5"
+        hdf5_source = self.path / "annotations.hdf5"
+        hdf5_source.write_bytes(self.annotations.read_bytes())
+        output = self.path / "prelabeled.hdf5"
         self.succeeds(
             "dataset",
             "prelabel",
-            self.annotations,
+            hdf5_source,
             "--model",
             checkpoint,
             "--output",
@@ -332,3 +340,171 @@ class ReviewTools(unittest.TestCase):
                 self.assertEqual(len(chosen), 3)
                 counts.append(chosen)
         self.assertEqual(*counts)
+
+    def test_append_materializes_external_skeleton_in_new_location(self):
+        metadata = self.path / "skeleton.h5"
+        with (
+            h5py.File(self.annotations, "r+") as annotated,
+            h5py.File(metadata, "w") as file,
+        ):
+            for key in ("skeleton", "skeleton_names"):
+                annotated.copy(key, file)
+                del annotated[key]
+                annotated[key] = h5py.ExternalLink(metadata.name, f"/{key}")
+            file["skeleton"].attrs["label"] = "external"
+        candidates = self.path / "one.csv"
+        candidates.write_text("frame\n2\n")
+        output = self.path / "nested" / "expanded.hdf5"
+        output.parent.mkdir()
+        self.succeeds(
+            "dataset",
+            "append",
+            self.annotations,
+            "--source",
+            self.video,
+            "--frames",
+            candidates,
+            "--output",
+            output,
+            "--gray",
+        )
+        with h5py.File(output, "r") as file:
+            self.assertEqual(file["skeleton"].file.id, file.id)
+            self.assertEqual(file["skeleton"].attrs["label"], "external")
+            self.assertEqual(
+                file["skeleton_names"].asstr()[:].tolist(), ["left", "right"]
+            )
+
+    def test_annotation_init_rejects_a_later_uint16_batch(self):
+        reader = self.path / "mixed.py"
+        reader.write_text(
+            "import numpy as np\n"
+            "def create_reader(path, *, batch_size, argv):\n"
+            "    yield np.zeros((1, 32, 32, 1), dtype=np.uint8)\n"
+            "    yield np.full((1, 32, 32, 1), 500, dtype=np.uint16)\n"
+        )
+        output = self.path / "mixed.h5"
+        code, _, error = invoke(
+            "dataset",
+            "init",
+            output,
+            "--video",
+            self.video,
+            "--skeleton",
+            self.skeleton,
+            "--custom-reader",
+            reader,
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("dtype uint8", error)
+        self.assertFalse(output.exists())
+
+    def test_two_diverse_frames_can_come_from_two_distinct_clusters(self):
+        frames = np.asarray([0] * 5 + [255] * 5, dtype=np.uint8)
+        video = self.path / "black-and-white.avi"
+        writer = VideoWriter(str(video), (32, 32), fps=5)
+        try:
+            writer.write_batch(
+                np.broadcast_to(frames[:, None, None, None], (10, 32, 32, 3))
+            )
+        finally:
+            writer.close()
+        output = self.path / "two.h5"
+        self.succeeds(
+            "dataset",
+            "init",
+            output,
+            "--video",
+            video,
+            "--skeleton",
+            self.skeleton,
+            "--sample",
+            "diverse",
+            "--count",
+            2,
+            "--seed",
+            42,
+            "--gray",
+        )
+        with h5py.File(output, "r") as file:
+            np.testing.assert_array_equal(file["images"][:, 0, 0, 0], [0, 255])
+
+    def test_trace_reads_skeletons_independently_of_the_hdf5_image_key(self):
+        skeleton = self.path / "annotation-metadata.hdf5"
+        skeleton.write_bytes(self.annotations.read_bytes())
+        with h5py.File(skeleton, "r+") as file:
+            file.move("images", "camera2")
+        predictions = self.path / "poses.npy"
+        np.save(predictions, np.ones((2, 2, 3)))
+        output = self.path / "trace.png"
+        self.succeeds(
+            "predictions",
+            "trace",
+            predictions,
+            "--skeleton",
+            skeleton,
+            "--keypoint",
+            "right",
+            "--output",
+            output,
+        )
+        numbered = self.path / "numbered.csv"
+        numbered.write_text("name,parent,swap\n010,,20\n20,010,010\n")
+        self.succeeds(
+            "predictions",
+            "trace",
+            predictions,
+            "--skeleton",
+            numbered,
+            "--keypoint",
+            "010",
+            "--output",
+            output,
+            "--overwrite",
+        )
+
+    def test_preview_renders_bgr_images_in_rgb_order(self):
+        from matplotlib import pyplot as plt
+        from deepposekit.cli.augmentations import _draw_panel
+
+        figure, axes = plt.subplots(1, 2)
+        try:
+            image = np.zeros((6, 6, 3), dtype=np.uint8)
+            image[1, 2] = [0, 0, 255]
+            points = np.empty((0, 2))
+            _draw_panel(axes[0], image, points, (), "BGR", rgb=False)
+            _draw_panel(axes[1], image, points, (), "RGB", rgb=True)
+            np.testing.assert_array_equal(
+                axes[0].images[0].get_array()[1, 2], [255, 0, 0]
+            )
+            np.testing.assert_array_equal(
+                axes[1].images[0].get_array()[1, 2], [0, 0, 255]
+            )
+        finally:
+            plt.close(figure)
+
+    def test_full_mode_defaults_to_a_reviewed_frame(self):
+        from unittest.mock import patch
+        from deepposekit.cli.augmentations import _draw_panel
+
+        with h5py.File(self.annotations, "r+") as file:
+            file["annotated"][0] = False
+        config = self.path / "full.toml"
+        config.write_text(
+            '[data]\nannotations = "annotations.h5"\nmode = "full"\n'
+            '[generator]\naugmenter = ["Affine"]\n'
+        )
+        with patch(
+            "deepposekit.cli.augmentations._draw_panel", wraps=_draw_panel
+        ) as draw:
+            self.succeeds(
+                "imgaug",
+                "preview",
+                "--config",
+                config,
+                "--samples",
+                1,
+                "--output",
+                self.path / "full.png",
+            )
+        np.testing.assert_array_equal(draw.call_args_list[0].args[1], self.images[1])

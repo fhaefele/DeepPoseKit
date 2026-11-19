@@ -127,7 +127,16 @@ def make_parser(
     )
     _path(init, "output", "h5", help="Output annotation HDF5 file.")
     _path(
-        init, "--video", "avi", "mp4", "mov", "mkv", required=True, help="Input video."
+        init,
+        "--video",
+        "avi",
+        "mp4",
+        "mov",
+        "mkv",
+        "h5",
+        "hdf5",
+        required=True,
+        help="Input video or recording read by a custom reader.",
     )
     _path(init, "--skeleton", "csv", required=True, help="Keypoint skeleton CSV.")
     init.add_argument(
@@ -246,6 +255,9 @@ def make_parser(
     )
     preview.add_argument(
         "--seed", type=_index, help="Seed for repeatable augmentations."
+    )
+    preview.add_argument(
+        "--rgb", action="store_true", help="Interpret stored color images as RGB."
     )
     _path(preview, "--output", "png", help="Save a PNG preview grid.")
     output_options(preview)

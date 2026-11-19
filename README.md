@@ -227,7 +227,9 @@ deepposekit imgaug preview --config training.toml \
   --frame 42 --samples 8 --seed 17 --output preview.png
 ```
 
-Copy the generated array into `[generator].augmenter`. The transforms run
+Copy the generated array into `[generator].augmenter`. Some imgaug classes
+need extra parameters or use APIs unavailable in the installed NumPy.
+`imgaug toml` reports when it cannot produce a working starter. The transforms run
 in the order listed. Preview uses the training pipeline on a labeled image
 and overlays the corresponding keypoints on the original and each variant.
 A minimal config uses the same sections as a full training config.
@@ -248,7 +250,8 @@ Use repeatable `--augment` flags to try an ordered pipeline from the command
 line. These flags replace the entire config pipeline when supplied together
 with `--config`. Use `--annotations` to override the annotation path, and
 `--output` to save a grid on a machine without a display. Frame indices are
-zero-based rows in the annotation HDF5 file.
+zero-based rows in the annotation HDF5 file. Use `--rgb` for color datasets
+stored in RGB order instead of OpenCV's BGR order.
 
 ```bash
 deepposekit imgaug preview --annotations fly-annotations.h5 \
