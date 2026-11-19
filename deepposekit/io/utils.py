@@ -139,7 +139,10 @@ def initialize_dataset(
     width = images.shape[2]
     n_channels = images.shape[3]
     skeleton = initialize_skeleton(skeleton)
-    skeleton_names = skeleton["name"].values
+    skeleton_names = [str(name).encode("utf-8") for name in skeleton["name"]]
+    name_dtype = h5py.string_dtype(
+        encoding="utf-8", length=max((len(name) for name in skeleton_names), default=1)
+    )
     skeleton = skeleton[["tree", "swap_index"]].values
     n_keypoints = skeleton.shape[0]
 
@@ -172,8 +175,8 @@ def initialize_dataset(
         h5file.create_dataset(
             "skeleton_names",
             (skeleton.shape[0],),
-            dtype="S10",
-            data=skeleton_names.astype("S10"),
+            dtype=name_dtype,
+            data=np.asarray(skeleton_names, dtype=name_dtype),
         )
 
 
@@ -288,6 +291,9 @@ def merge_new_images(
     merged_h5file.create_dataset(
         "skeleton", h5file["skeleton"].shape, dtype=np.int32, data=h5file["skeleton"][:]
     )
+
+    if "skeleton_names" in h5file:
+        h5file.copy("skeleton_names", merged_h5file)
 
     for idx in range(h5file[dataset].shape[0]):
         merged_h5file[dataset][idx] = h5file[dataset][idx]

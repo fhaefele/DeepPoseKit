@@ -21,30 +21,223 @@ uv run --locked python -c "from deepposekit.models import StackedDenseNet"
 
 ### NVIDIA GPU on Linux or WSL2
 
-Use the `gpu` extra on x86-64 Linux or WSL2 with a working NVIDIA driver.
-The `deepposekit-gpu` command runs Python with the CUDA libraries and compiler
-from the locked environment. [TensorFlow GPU installation guide](https://www.tensorflow.org/install/pip)
+Install the `gpu` extra on x86-64 Linux or WSL2 to add the CUDA libraries and
+compiler. `deepposekit` sets up those paths automatically. TensorFlow uses a
+visible NVIDIA GPU when available and runs on CPU when it sees no GPU.
 
-Save this as `check_gpu.py`.
+```bash
+uv sync --locked --extra gpu
+uv run --locked deepposekit doctor
+```
 
-```python
-import tensorflow as tf
-from deepposekit.models import StackedDenseNet
+`doctor` reports the command, DeepPoseKit, Python, TensorFlow, and Keras
+versions, the installed CUDA runtime, and whether TensorFlow can see a GPU.
+Set `CUDA_VISIBLE_DEVICES=-1` to run a command on CPU.
+[TensorFlow GPU installation guide](https://www.tensorflow.org/install/pip)
 
-devices = tf.config.list_physical_devices("GPU")
-assert devices, "No GPU detected"
-print(devices)
+## Command line
+
+From a checkout, run `uv run --locked deepposekit --help` or
+`uv run --locked python -m deepposekit --help`. To install the CLI or run it
+without a checkout, replace `CLI_REF` with a fork tag or commit containing the CLI.
+
+```bash
+fork='git+https://github.com/fhaefele/DeepPoseKit.git@CLI_REF'
+uv tool install --python 3.12 "$fork"
+deepposekit --help
+uvx --python 3.12 --from "$fork" deepposekit --help
+```
+
+For a GPU tool install, select the extra once and use the same commands.
+
+```bash
+uv tool install --python 3.12 "deepposekit[gpu] @ $fork"
+deepposekit train training.toml
+```
+
+### Prepare, train, and evaluate
+
+Use a skeleton CSV with `name`, `parent`, and `swap` columns. Leave a root's
+`parent` and an unpaired keypoint's `swap` empty. Label the resulting HDF5 in
+an external annotator.
+
+```bash
+deepposekit dataset init annotations.h5 --video video.avi --skeleton skeleton.csv --frame-step 20 --gray
+deepposekit inspect annotations.h5
+```
+
+Save this as `training.toml` beside your labeled `annotations.h5`.
+
+```toml
+[data]
+annotations = "annotations.h5"
+dataset = "images"
+
+[generator]
+downsample_factor = 2
+use_graph = true
+sigma = 5
+validation_split = 0.2
+random_seed = 17
+augmenter = [{ name = "Affine", rotate = -5 }]
+
+[model]
+name = "StackedDenseNet"
+n_stacks = 1
+growth_rate = 48
+subpixel = true
+
+[compile]
+optimizer = { name = "Adam", learning_rate = 0.001 }
+loss = "mse"
+jit_compile = false
+
+[training]
+batch_size = 2
+epochs = 1
+n_workers = 1
+callbacks = [{ name = "EarlyStopping", monitor = "val_loss", patience = 2 }]
+
+[output]
+checkpoint = "fly.keras"
 ```
 
 ```bash
-nvidia-smi
-uv sync --locked --extra gpu
-uv run --locked --extra gpu deepposekit-gpu check_gpu.py
+deepposekit train training.toml
+deepposekit inspect fly.keras
+deepposekit evaluate fly.keras holdout.h5 --output metrics.json
 ```
 
-Use `uv run --locked --extra gpu deepposekit-gpu your_script.py` for the training
-and prediction examples below. GPU training and legacy subpixel prediction were
-tested on an RTX 4090 in WSL2.
+All paths in the config are relative to the TOML file unless absolute. The
+options use the Python argument names.
+
+| Section | Options |
+| --- | --- |
+| `[data]` | `DataGenerator` options, including `dataset` and `mode`, with `annotations` supplying the HDF5 path. |
+| `[generator]` | `TrainingGenerator` options such as `downsample_factor`, `use_graph`, `graph_scale`, `sigma`, `validation_split`, `shuffle`, and `random_seed`. |
+| `[model]` | Constructor options for `StackedDenseNet` (the default), `StackedHourglass`, `LEAP`, or `DeepLabCut`. Set `pretrained_weights = "none"` or `weights = "none"` on models that expose those options to initialize without external weights. |
+| `[compile]` | Keras `Model.compile` options. Omit the section for Adam and mean squared error. |
+| `[training]` | DeepPoseKit `fit` options and Keras fit controls such as `initial_epoch` and `validation_freq`. Set `batch_size`. Omit `steps_per_epoch` to use all full training batches. |
+| `[output]` | Final `.keras` checkpoint path. |
+
+Optimizer, loss, and metric specifications accept Keras names or tables
+containing a built-in name and its parameters. `augmenter` and `callbacks`
+take ordered arrays of names or tables. Augmenters use imgaug classes and
+DeepPoseKit's `FlipAxis`. Callbacks use Keras classes and DeepPoseKit's
+`Logger` and `ModelCheckpoint`. Use the Python API to supply custom objects.
+Commands that create an output require `--overwrite` to replace it.
+Checkpoint callback paths may use Keras placeholders such as `{epoch}`.
+Use a dedicated directory for `BackupAndRestore`. If training finishes and
+the final checkpoint cannot be written, retry the same command with
+`--overwrite` to publish the saved training state. When cleanup is enabled,
+the CLI removes the backup files after publication succeeds.
+
+For fine-tuning, use compatible labeled annotations and a new output path in
+`fine-tune.toml`. Set `[model].name` for other backbones. Omit architecture
+and confidence map settings to inherit them from the checkpoint. The loaded
+checkpoint supplies the model weights, and training uses a fresh optimizer. For older checkpoints with incomplete skeleton metadata,
+check the original keypoint order and skeleton before fine-tuning.
+
+```bash
+deepposekit train fine-tune.toml --init-from best_model_densenet.h5
+```
+
+### Convert and predict
+
+```bash
+deepposekit convert best_model_densenet.h5 fly-converted.keras
+deepposekit predict fly-converted.keras video.avi predictions.npy --gray --batch-size 8
+deepposekit convert legacy.weights-only.h5 fly-from-weights.keras --config legacy-training.toml
+```
+
+For a weights-only conversion, the config must match the original model and
+annotation geometry. The [weights-only Python example](#import-legacy-stackeddensenet-weights)
+lists the architecture options for the public fly checkpoint. Prediction accepts
+both full legacy checkpoints and modern `.keras` files. The output is a NumPy
+array of `(frames, keypoints, 3)` with `(x, y, confidence)` in input frame order.
+
+A custom reader can add preprocessing or read another recording format.
+The runnable [videoreader.py example](examples/videoreader.py) uses
+`VideoReader` and adds grayscale and rotation options.
+
+```bash
+uv run --locked deepposekit predict model.keras video.avi predictions.npy \
+  --batch-size 8 --custom-reader examples/videoreader.py \
+  --custom-reader-args --gray --rotate 90
+```
+
+Run this command from the checkout root. For a tool install, download the
+example and pass its path to `deepposekit predict`. Choose preprocessing that
+matches the checkpoint's input shape and channel count. Prediction coordinates
+refer to the transformed frames. Pass `--help` after `--custom-reader-args` to
+show the example reader's options.
+
+A custom reader module defines `create_reader(path, *, batch_size, argv)`.
+For single-stream readers, DeepPoseKit passes this factory a `Path`, the
+requested batch size, and a list of every argument after
+`--custom-reader-args`. Put DeepPoseKit flags before that marker. Return an
+iterable of NumPy arrays shaped `(batch, height, width, channels)` in frame
+order, including the final short batch. DeepPoseKit closes the iterator and
+reader when they provide `close()` methods. To support a different file
+format, keep the factory signature and adapt how the example opens the
+recording and yields frames.
+
+#### Predict on multiple recordings
+
+```bash
+deepposekit predict model.keras a.avi b.avi --output-dir predictions
+deepposekit predict model.keras recordings/ --output-dir predictions
+deepposekit predict model.keras recordings/ --recursive --output-dir predictions
+```
+
+The checkpoint loads once per run. The CLI creates the output directory and
+writes a `.npy` for each recording and selected stream. Directory scans preserve
+paths relative to the input directory. In the recursive example above,
+`recordings/session/clip.avi` produces `predictions/session/clip.npy`.
+Explicit file inputs use their basenames.
+The built-in reader scans common video extensions.
+
+Colliding output names fail before inference, including names that differ
+only by case. Existing outputs require `--overwrite`. If a recording fails
+during inference, completed outputs from the run remain available.
+
+Custom reader flags apply to every input. A reader may declare
+`INPUT_EXTENSIONS` to filter directory scans. The example reader uses
+`(".avi", ".mkv", ".mov", ".mp4")`. When a custom reader omits that setting,
+all regular input files are candidates. Choose a separate output directory
+for readers whose scans include `.npy` files.
+For recordings with several streams, a reader can also define
+`prediction_streams(argv)`. When this hook is present, the CLI uses its
+mapping of stream names to factories accepting `(path, *, batch_size)`.
+Use `--output-dir` with multiple streams. For example, a stream named
+`Camera1` writes `recording.Camera1.npy`.
+
+A downstream package can provide its own command name and reader options
+through `deepposekit.cli.main(prog=..., configure_predict=...)`.
+The callback supplies reader options on the shared prediction parser and can
+translate them into `custom_reader` and `custom_reader_args`. Help and completion
+use the downstream command name and the same parser.
+
+### Help, completion, and environment
+
+Run `deepposekit train --help` for command-specific flags and
+`deepposekit doctor` for installed versions and detected devices. Help uses
+terminal width and supports `--color auto|always|never`. Machine-readable
+output is plain text.
+
+In Bash, add the following to your shell configuration.
+
+```bash
+source <(deepposekit completion bash)
+```
+
+In Zsh, run the following after any existing `compinit` setup.
+
+```zsh
+autoload -Uz compinit
+compinit
+source <(deepposekit completion zsh)
+```
 
 ## Train from HDF5 annotations
 
@@ -80,8 +273,7 @@ its encoder locally.
 ## Import a full checkpoint and predict
 
 The example uses `best_model_densenet.h5` and `video.avi` from the public fly
-dataset. Run your script with `uv run --locked python your_script.py` for
-the base install or `uv run --locked --extra gpu deepposekit-gpu your_script.py` on GPU.
+dataset. Run the Python example with `uv run --locked python your_script.py`.
 [Public example files](https://github.com/jgraving/DeepPoseKit-Data/tree/0aa5e3f5e8f9df63c48ba2bf491354472daa3e7e/datasets/fly)
 
 ```python

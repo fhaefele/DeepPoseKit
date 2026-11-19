@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepposekit"
-version = "0.3.9"
+version = "0.4.0"
 description = "A toolkit for pose estimation using deep learning"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -19,6 +19,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Recognition",
 ]
 dependencies = [
+    "argcomplete>=3.5,<4",
     "h5py",
     "imgaug==0.4.0",
     "keras==3.15.1",
@@ -29,6 +30,7 @@ dependencies = [
     "opencv-python<4.12",
     "pandas",
     "pyyaml",
+    "rich-argparse>=1.7,<2",
     "scikit-learn",
     "tensorflow==2.21.0",
 ]
@@ -39,7 +41,7 @@ gpu = [
 ]
 
 [project.scripts]
-deepposekit-gpu = "_deepposekit_gpu:main"
+deepposekit = "deepposekit.cli:console_main"
 
 [project.urls]
 Homepage = "https://github.com/jgraving/DeepPoseKit"

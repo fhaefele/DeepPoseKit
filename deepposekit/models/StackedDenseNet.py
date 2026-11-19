@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
 from keras import Model
 from keras.layers import BatchNormalization
 
@@ -135,35 +134,10 @@ class StackedDenseNet(BaseModel):
         super(StackedDenseNet, self).__init__(train_generator, subpixel, **kwargs)
 
     def __init_model__(self):
-        max_transitions = np.min(
-            [
-                image_utils.n_downsample(self.train_generator.height),
-                image_utils.n_downsample(self.train_generator.width),
-            ]
+        n_transitions = image_utils.resolve_n_transitions(
+            self.n_transitions, self.train_generator.height, self.train_generator.width
         )
-
-        n_transitions = self.n_transitions
-        if isinstance(n_transitions, (int, np.integer)):
-            if n_transitions == 0:
-                raise ValueError("n_transitions cannot equal zero")
-            if n_transitions < 0:
-                n_transitions += 1
-                n_transitions = max_transitions - np.abs(n_transitions)
-                self.n_transitions = n_transitions
-            elif 0 < n_transitions <= max_transitions:
-                self.n_transitions = n_transitions
-            else:
-                raise ValueError(
-                    "n_transitions must be in range {0} "
-                    "< n_transitions <= "
-                    "{1}".format(-max_transitions + 1, max_transitions)
-                )
-        else:
-            raise TypeError(
-                "n_transitions must be integer in range "
-                "{0} < n_transitions <= "
-                "{1}".format(-max_transitions + 1, max_transitions)
-            )
+        self.n_transitions = n_transitions
 
         if self.train_generator.downsample_factor < 2:
             raise ValueError(
@@ -197,7 +171,6 @@ class StackedDenseNet(BaseModel):
                 compression_factor=self.compression_factor,
                 bottleneck_factor=self.bottleneck_factor,
             )(normalized)
-        n_downsample = self.n_transitions - self.train_generator.downsample_factor
         outputs = front_outputs
         model_outputs = OutputChannels(
             self.train_generator.n_output_channels, name="output_0"
