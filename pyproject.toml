@@ -33,8 +33,19 @@ dependencies = [
     "tensorflow==2.21.0",
 ]
 
+[project.optional-dependencies]
+gpu = [
+    "tensorflow[and-cuda]==2.21.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[project.scripts]
+deepposekit-gpu = "_deepposekit_gpu:main"
+
 [project.urls]
 Homepage = "https://github.com/jgraving/DeepPoseKit"
+
+[tool.setuptools]
+py-modules = ["_deepposekit_gpu"]
 
 [tool.setuptools.packages.find]
 include = ["deepposekit*"]

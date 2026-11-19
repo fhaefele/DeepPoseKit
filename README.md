@@ -17,14 +17,22 @@ uv sync --locked
 uv run --locked python -c "from deepposekit.models import StackedDenseNet"
 ```
 
-On a supported NVIDIA host with its driver installed, uv can install TensorFlow’s
-CUDA dependencies for a run. GPU execution has not been verified for this fork.
-[TensorFlow GPU install guide](https://www.tensorflow.org/install/pip)
+### NVIDIA GPU on Linux or WSL2
+
+Use the `gpu` extra on x86-64 Linux or WSL2 with a working NVIDIA driver.
+The `deepposekit-gpu` command runs Python with the CUDA libraries and compiler
+from the locked environment. [TensorFlow GPU installation guide](https://www.tensorflow.org/install/pip)
 
 ```bash
-uv run --locked --with 'tensorflow[and-cuda]==2.21.0' \
-  python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+nvidia-smi
+uv sync --locked --extra gpu
+uv run --locked --extra gpu deepposekit-gpu -c \
+  'import tensorflow as tf; devices = tf.config.list_physical_devices("GPU"); assert devices, "No GPU detected"; print(devices)'
 ```
+
+Use `uv run --locked --extra gpu deepposekit-gpu your_script.py` for the training
+and prediction examples below. GPU training and legacy subpixel prediction were
+tested on an RTX 4090 in WSL2.
 
 ## Train from HDF5 annotations
 
