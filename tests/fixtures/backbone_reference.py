@@ -20,6 +20,15 @@ BACKBONES = {
             "subpixel": False,
         },
     },
+    "DeepLabCut": {
+        "training": {"downsample_factor": 2, "use_graph": False, "sigma": 5},
+        "model": {
+            "backbone": "mobilenetv2",
+            "alpha": 0.35,
+            "weights": None,
+            "subpixel": True,
+        },
+    },
     "StackedHourglass": {
         "training": {"downsample_factor": 2, "use_graph": False, "sigma": 5},
         "model": {

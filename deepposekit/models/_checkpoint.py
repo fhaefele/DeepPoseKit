@@ -4,6 +4,7 @@ import json
 import re
 
 import h5py
+import keras
 import numpy as np
 
 METADATA_ENTRY = "deepposekit.json"
@@ -38,7 +39,7 @@ def read_config(value, field):
 
 
 def normalize_legacy_graph(config):
-    """Translate old Functional model and node names for Keras 3."""
+    """Translate legacy Functional graph configurations for Keras 3."""
     layers = config["layers"]
     nested_models = {
         layer["name"]
@@ -48,6 +49,11 @@ def normalize_legacy_graph(config):
     for layer in layers:
         layer_name = layer["name"]
         layer_config = layer["config"]
+        if layer["class_name"] == "SeparableConv2D":
+            # Legacy SeparableConv2D also wrote the inherited Conv2D kernel
+            # options. Its actual kernels use the depthwise/pointwise options.
+            for field in ("kernel_initializer", "kernel_regularizer", "kernel_constraint"):
+                layer_config.pop(field, None)
         if layer_name in _DENSENET_STEM_NAMES:
             layer["name"] = layer_config["name"] = _DENSENET_STEM_NAMES[layer_name]
         if layer_name in nested_models:
@@ -196,6 +202,26 @@ def _resolve_nested_tf_scopes(source, target):
     return resolved
 
 
+def _depthwise_kernel_aliases(model, target):
+    # Keras 2 named DepthwiseConv2D's kernel depthwise_kernel. Other layers
+    # such as SeparableConv2D still use that name in Keras 3.
+    descendants = list(model.layers)
+    depthwise_ids = set()
+    while descendants:
+        layer = descendants.pop()
+        if isinstance(layer, keras.Model):
+            descendants.extend(layer.layers)
+        elif isinstance(layer, keras.layers.DepthwiseConv2D) and layer.built:
+            depthwise_ids.add(id(layer.kernel))
+
+    aliases = {}
+    for (owner, path), variable in target.items():
+        prefix, _, role = path.rpartition("/")
+        if role == "kernel" and id(variable) in depthwise_ids:
+            aliases[(owner, f"{prefix}/depthwise_kernel")] = (owner, path)
+    return aliases
+
+
 def assign_legacy_weights(model, group, *, existing_model=False):
     """Validate and read every tensor before changing any model weights."""
     writer = group.attrs.get("keras_version")
@@ -208,8 +234,16 @@ def assign_legacy_weights(model, group, *, existing_model=False):
     if existing_model:
         source = _relative_layer_names(source)
         target = _relative_layer_names(target)
+    aliases = {}
+    if any(path.endswith("/depthwise_kernel") for _, path in source):
+        aliases = _depthwise_kernel_aliases(model, target)
     if legacy_tf_scopes and source.keys() != target.keys():
-        source = _resolve_nested_tf_scopes(source, target)
+        source = _resolve_nested_tf_scopes(source, target.keys() | aliases.keys())
+    for legacy_key, modern_key in aliases.items():
+        if legacy_key in source:
+            if modern_key in source:
+                raise ValueError(f"Duplicate legacy tensor identity {modern_key}")
+            source[modern_key] = source.pop(legacy_key)
     missing = target.keys() - source.keys()
     extra = source.keys() - target.keys()
     if missing or extra:
