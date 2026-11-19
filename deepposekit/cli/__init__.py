@@ -289,8 +289,12 @@ def make_parser(
         "trace", help="Plot x, y, confidence, and a keypoint trajectory."
     )
     review_options(trace, "png")
-    trace.add_argument(
+    selector = trace.add_mutually_exclusive_group()
+    selector.add_argument(
         "--keypoint", default="0", help="Keypoint index or name from a skeleton."
+    )
+    selector.add_argument(
+        "--keypoint-name", help="Select a skeleton name, including numeric names."
     )
     outliers = review.add_parser(
         "outliers", help="Rank frames by confidence drops and coordinate jumps."

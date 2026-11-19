@@ -4,6 +4,8 @@ import csv
 from contextlib import ExitStack, contextmanager
 from itertools import zip_longest
 from math import isqrt
+from os import fsdecode
+from pathlib import Path
 from shutil import copyfile
 from uuid import uuid4
 
@@ -186,6 +188,88 @@ def _frame_indices(path):
     return indices
 
 
+def _reference_dtype(dtype):
+    if h5py.check_dtype(ref=dtype) is not None:
+        return True
+    if dtype.fields is not None:
+        return any(_reference_dtype(field[0]) for field in dtype.fields.values())
+    if dtype.subdtype is not None:
+        return _reference_dtype(dtype.subdtype[0])
+    base = h5py.check_dtype(vlen=dtype)
+    return isinstance(base, np.dtype) and _reference_dtype(base)
+
+
+def _contains_references(obj):
+    return (isinstance(obj, h5py.Dataset) and _reference_dtype(obj.dtype)) or any(
+        _reference_dtype(obj.attrs.get_id(name).dtype) for name in obj.attrs
+    )
+
+
+def _rewrite_needed(data, count):
+    return data.chunks is None or (
+        data.maxshape[0] is not None and count > data.maxshape[0]
+    )
+
+
+def _protect_references(file, arrays, count):
+    replacements = [array for array in arrays if _rewrite_needed(array, count)]
+    if not replacements:
+        return
+    if (
+        any(h5py.h5o.get_info(array.id).rc > 1 for array in replacements)
+        or _contains_references(file)
+        or file.visititems(
+            lambda _name, obj: True if _contains_references(obj) else None
+        )
+    ):
+        raise ValueError(
+            "HDF5 object references or hard links prevent extending fixed annotation arrays"
+        )
+
+
+def _external_links(file):
+    links = {}
+
+    def collect(name, link):
+        if isinstance(link, h5py.ExternalLink):
+            links[name] = link
+
+    file.visititems_links(collect)
+    return links
+
+
+def _external_dependencies(source):
+    source = input_file(source).absolute()
+    dependencies = set()
+
+    def add(name):
+        path = Path(fsdecode(name))
+        if path != Path("."):
+            dependencies.update(
+                (source.parent / path, source.resolve().parent / path, path.absolute())
+            )
+
+    def collect_storage(_name, obj):
+        if isinstance(obj, h5py.Dataset):
+            for filename, _, _ in obj.external or ():
+                add(filename)
+            if obj.is_virtual:
+                for mapping in obj.virtual_sources():
+                    add(mapping.file_name)
+
+    with h5py.File(source, "r") as file:
+        for link in _external_links(file).values():
+            add(link.filename)
+        file.visititems(collect_storage)
+        for key in ("skeleton", "skeleton_names"):
+            data = file.get(key)
+            if isinstance(data, h5py.Dataset):
+                if data.file.id != file.id:
+                    add(data.file.filename)
+                collect_storage(key, data)
+    return dependencies
+
+
 @contextmanager
 def _annotation_copy(source, destination, dataset):
     copyfile(source, destination)
@@ -205,10 +289,21 @@ def _annotation_copy(source, destination, dataset):
                 and not data.is_virtual
             ):
                 continue
+            if _contains_references(data):
+                raise ValueError(
+                    f"Cannot copy external {key} metadata with HDF5 object references"
+                )
             del output[key]
             inline = output.create_dataset(key, data=data[:], dtype=data.dtype)
             for name, value in data.attrs.items():
                 inline.attrs[name] = value
+        for name, link in _external_links(output).items():
+            backing = Path(link.filename)
+            if not backing.is_absolute():
+                del output[name]
+                output[name] = h5py.ExternalLink(
+                    str(source.absolute().parent / backing), link.path
+                )
         yield output
 
 
@@ -224,9 +319,7 @@ def _local_arrays(file, dataset):
 
 def _extend(file, key, count):
     data = file[key]
-    if data.chunks is not None and (
-        data.maxshape[0] is None or count <= data.maxshape[0]
-    ):
+    if not _rewrite_needed(data, count):
         data.resize(count, axis=0)
         return
     # Older HDF5 inputs can have fixed-size arrays. Extend the staged copy in chunks.
@@ -258,7 +351,8 @@ def append(args):
     inputs = [args.annotations, args.source, args.frames]
     if args.custom_reader is not None:
         inputs.append(args.custom_reader)
-    output = _annotation_output(args.output, args.overwrite, *inputs)
+    dependencies = _external_dependencies(args.annotations)
+    output = _annotation_output(args.output, args.overwrite, *inputs, *dependencies)
     annotation_summary(args.annotations, args.dataset)
     indices = _frame_indices(args.frames)
     with atomic_output(output, args.overwrite) as temporary:
@@ -268,6 +362,7 @@ def append(args):
         ):
             start = len(file[args.dataset])
             end = start + len(indices)
+            _protect_references(file, _local_arrays(file, args.dataset), end)
             for key in (args.dataset, "annotations", "annotated"):
                 _extend(file, key, end)
             images = file[args.dataset]
@@ -284,8 +379,9 @@ def append(args):
 
 
 def prelabel(args):
+    dependencies = _external_dependencies(args.annotations)
     output = _annotation_output(
-        args.output, args.overwrite, args.annotations, args.model
+        args.output, args.overwrite, args.annotations, args.model, *dependencies
     )
     annotation_summary(args.annotations, args.dataset)
     data = DataGenerator(str(args.annotations), dataset=args.dataset, mode="full")

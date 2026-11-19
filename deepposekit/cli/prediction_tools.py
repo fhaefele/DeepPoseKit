@@ -70,15 +70,25 @@ def _range(args, size):
     return args.start, stop
 
 
-def _keypoint(value, total, names):
-    if names is not None and value in names:
-        return names.index(value)
+def _keypoint(value, total, names, explicit_name):
+    if explicit_name is not None:
+        if names is None or explicit_name not in names:
+            raise ValueError(
+                f"Unknown keypoint name {explicit_name!r}. Provide a matching --skeleton."
+            )
+        return names.index(explicit_name)
     try:
         index = int(value)
-    except ValueError as error:
+    except ValueError:
+        index = None
+    if index is not None and str(index) == value and 0 <= index < total:
+        return index
+    if names is not None and value in names:
+        return names.index(value)
+    if index is None:
         raise ValueError(
             f"Unknown keypoint {value!r}. Provide a zero-based index or a matching --skeleton."
-        ) from error
+        )
     if not 0 <= index < total:
         raise ValueError(f"Keypoint index must be between 0 and {total - 1}")
     return index
@@ -102,7 +112,7 @@ def trace(args):
     predictions = _load_predictions(args.predictions)
     start, stop = _range(args, len(predictions))
     _, names = _skeleton(args.skeleton, predictions.shape[1])
-    index = _keypoint(args.keypoint, predictions.shape[1], names)
+    index = _keypoint(args.keypoint, predictions.shape[1], names, args.keypoint_name)
     output = _output(args, (".png",), args.predictions, args.skeleton)
     from matplotlib import pyplot as plt
 

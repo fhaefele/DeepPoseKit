@@ -275,7 +275,8 @@ arguments. Use `--start` and `--stop` to select a zero-based, half-open frame
 range. For headless review, export an AVI or MP4. `--fps` sets export playback
 speed. The trace plots x, y, confidence, and the x–y trajectory from the
 prediction array. A skeleton CSV or annotation HDF5 supplied with
-`--skeleton` provides edges for overlays or keypoint names for traces.
+`--skeleton` provides edges for overlays or keypoint names for traces. Use
+`--keypoint-name` to select a numeric name that also matches a column index.
 
 ```bash
 deepposekit predictions outliers predictions.npy --top 50 --output candidates.csv

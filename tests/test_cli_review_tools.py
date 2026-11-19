@@ -352,6 +352,8 @@ class ReviewTools(unittest.TestCase):
                 del annotated[key]
                 annotated[key] = h5py.ExternalLink(metadata.name, f"/{key}")
             file["skeleton"].attrs["label"] = "external"
+            file["other_experiment"] = [42]
+            annotated["other"] = h5py.ExternalLink(metadata.name, "/other_experiment")
         candidates = self.path / "one.csv"
         candidates.write_text("frame\n2\n")
         output = self.path / "nested" / "expanded.hdf5"
@@ -371,6 +373,7 @@ class ReviewTools(unittest.TestCase):
         with h5py.File(output, "r") as file:
             self.assertEqual(file["skeleton"].file.id, file.id)
             self.assertEqual(file["skeleton"].attrs["label"], "external")
+            np.testing.assert_array_equal(file["other"][:], [42])
             self.assertEqual(
                 file["skeleton_names"].asstr()[:].tolist(), ["left", "right"]
             )
@@ -508,3 +511,121 @@ class ReviewTools(unittest.TestCase):
                 self.path / "full.png",
             )
         np.testing.assert_array_equal(draw.call_args_list[0].args[1], self.images[1])
+
+    def test_append_keeps_prior_output_if_fixed_arrays_have_file_references(self):
+        with h5py.File(self.annotations, "r+") as file:
+            originals = file["images"][:]
+            del file["images"]
+            file.create_dataset("images", data=originals)
+            file.attrs["original_images"] = file["images"].ref
+        candidates = self.path / "one.csv"
+        candidates.write_text("frame\n2\n")
+        output = self.path / "expanded.h5"
+        output.write_bytes(b"prior output")
+        code, _, error = invoke(
+            "dataset",
+            "append",
+            self.annotations,
+            "--source",
+            self.video,
+            "--frames",
+            candidates,
+            "--output",
+            output,
+            "--overwrite",
+            "--gray",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("object references", error)
+        self.assertEqual(output.read_bytes(), b"prior output")
+        with h5py.File(self.annotations, "r") as file:
+            self.assertEqual(file[file.attrs["original_images"]].name, "/images")
+
+    def test_append_rejects_external_skeleton_with_reference_attributes(self):
+        metadata = self.path / "skeleton.h5"
+        with (
+            h5py.File(self.annotations, "r+") as annotated,
+            h5py.File(metadata, "w") as file,
+        ):
+            annotated.copy("skeleton", file)
+            annotated.copy("skeleton_names", file)
+            file["skeleton"].attrs["names"] = file["skeleton_names"].ref
+            del annotated["skeleton"]
+            annotated["skeleton"] = h5py.ExternalLink(metadata.name, "/skeleton")
+        candidates = self.path / "one.csv"
+        candidates.write_text("frame\n2\n")
+        output = self.path / "expanded.h5"
+        code, _, error = invoke(
+            "dataset",
+            "append",
+            self.annotations,
+            "--source",
+            self.video,
+            "--frames",
+            candidates,
+            "--output",
+            output,
+            "--gray",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("object references", error)
+        self.assertFalse(output.exists())
+
+    def test_annotation_tools_protect_linked_metadata_from_overwrite(self):
+        metadata = self.path / "metadata.h5"
+        with (
+            h5py.File(self.annotations, "r+") as annotated,
+            h5py.File(metadata, "w") as file,
+        ):
+            annotated.copy("skeleton", file)
+            del annotated["skeleton"]
+            annotated["skeleton"] = h5py.ExternalLink(metadata.name, "/skeleton")
+            file["other_experiment"] = [42]
+        before = metadata.read_bytes()
+        candidates = self.path / "one.csv"
+        candidates.write_text("frame\n2\n")
+        for arguments in (
+            (
+                "append",
+                self.annotations,
+                "--source",
+                self.video,
+                "--frames",
+                candidates,
+            ),
+            ("prelabel", self.annotations, "--model", self.path / "unused.keras"),
+        ):
+            code, _, error = invoke(
+                "dataset", *arguments, "--output", metadata, "--overwrite"
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("would replace an input", error)
+            self.assertEqual(metadata.read_bytes(), before)
+
+    def test_trace_distinguishes_numeric_indices_from_explicit_names(self):
+        from unittest.mock import patch
+
+        names = self.path / "numeric.csv"
+        names.write_text("name,parent,swap\n1,,0\n0,1,1\n")
+        predictions = self.path / "poses.npy"
+        values = np.ones((2, 2, 3))
+        values[:, :, 0] = [[10, 20], [11, 21]]
+        np.save(predictions, values)
+        for args, expected in (
+            ([], [10, 11]),
+            (["--keypoint", "0"], [10, 11]),
+            (["--keypoint-name", "0"], [20, 21]),
+        ):
+            with patch("matplotlib.axes.Axes.plot", autospec=True) as plot:
+                self.succeeds(
+                    "predictions",
+                    "trace",
+                    predictions,
+                    "--skeleton",
+                    names,
+                    "--output",
+                    self.path / "trace.png",
+                    "--overwrite",
+                    *args,
+                )
+                np.testing.assert_array_equal(plot.call_args_list[0].args[2], expected)
