@@ -159,13 +159,15 @@ def _geometry(config):
             or len(output) != 2
             or len(keypoints) != 2
             or not all(
-                isinstance(size, Integral) and size > 0
+                isinstance(size, Integral) and not isinstance(size, bool) and size > 0
                 for size in (*image, *output, *keypoints, channels)
             )
             or keypoints[1] != 2
             or keypoints[0] > channels
             or not isinstance(downsample, Integral)
+            or isinstance(downsample, bool)
             or downsample < 0
+            or isinstance(sigma, bool)
             or not isfinite(sigma)
             or sigma <= 0
         ):
@@ -174,6 +176,11 @@ def _geometry(config):
         raise ValueError(
             "Missing or invalid DeepPoseKit model geometry in checkpoint"
         ) from error
+    if tuple(size >> downsample for size in image[:2]) != output:
+        raise ValueError(
+            f"DeepPoseKit downsample_factor {downsample} is inconsistent with "
+            f"image shape {image[:2]} and heatmap shape {output}"
+        )
     return geometry
 
 
@@ -183,6 +190,10 @@ def _restore_model(train_model, metadata, generator, augmenter):
     name = pose["class_name"]
     if name not in _MODELS:
         raise ValueError(f"Unsupported DeepPoseKit model type {name!r}")
+    if not isinstance(config.get("subpixel"), bool):
+        raise ValueError(
+            "DeepPoseKit pose_model_config requires a boolean subpixel setting"
+        )
     model_type = getattr(import_module(f"deepposekit.models.{name}"), name)
     geometry = _geometry(config)
     saved_generator = metadata["train_generator_config"]["config"]
@@ -264,5 +275,5 @@ def load_legacy_weights(model, path):
     with h5py.File(path, "r") as checkpoint:
         if _legacy_checkpoint_layout(checkpoint) == "full":
             raise ValueError("Use load_model for full DeepPoseKit checkpoints")
-        assign_legacy_weights(model.train_model, checkpoint, relative_layer_names=True)
+        assign_legacy_weights(model.train_model, checkpoint, existing_model=True)
     return model
