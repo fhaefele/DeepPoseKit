@@ -66,37 +66,11 @@ def find_maxima(x):
 
 
 def fftshift1d(x, axis=0):
-
+    """Shift a flattened signal and restore its original shape."""
     x_shape = tf.shape(x)
-    x = tf.reshape(x, (-1, 1))
-    n_samples = tf.cast(tf.shape(x)[0], tf.float32)
-    even = n_samples / 2.0
-    even = tf.round(even)
-    even = even * 2.0
-    even = tf.equal(n_samples, even)
-
-    def true_fn():
-        return x
-
-    def false_fn():
-        x_padded = tf.concat([x, tf.zeros((1, 1))], axis=0)
-        return x_padded
-
-    x = tf.cond(even, true_fn, false_fn)
-    x1, x2 = tf.split(x, 2, axis=axis)
-
-    def true_fn():
-        return x2
-
-    def false_fn():
-        x2_unpadded = x2[:-1]
-        return x2_unpadded
-
-    x2 = tf.cond(even, true_fn, false_fn)
-    x = tf.concat((x2, x1), axis=axis)
-    x = tf.reshape(x, x_shape)
-
-    return x
+    flattened = tf.reshape(x, (-1, 1))
+    shifted = tf.signal.fftshift(flattened, axes=axis)
+    return tf.reshape(shifted, x_shape)
 
 
 def gaussian_kernel_1d(size, sigma):
