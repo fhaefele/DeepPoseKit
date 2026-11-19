@@ -629,3 +629,100 @@ class ReviewTools(unittest.TestCase):
                     *args,
                 )
                 np.testing.assert_array_equal(plot.call_args_list[0].args[2], expected)
+
+    def test_virtual_skeleton_protects_backing_relative_to_its_owner(self):
+        folder = self.path / "metadata"
+        folder.mkdir()
+        backing = folder / "graph.h5"
+        with (
+            h5py.File(self.annotations, "r+") as annotated,
+            h5py.File(backing, "w") as file,
+        ):
+            file["graph"] = annotated["skeleton"][:]
+            file["unrelated"] = [42]
+            del annotated["skeleton"]
+            annotated["skeleton"] = h5py.ExternalLink(
+                "metadata/skeleton.h5", "/skeleton"
+            )
+        with h5py.File(folder / "skeleton.h5", "w") as file:
+            layout = h5py.VirtualLayout(shape=(2, 2), dtype=np.int32)
+            layout[:] = h5py.VirtualSource("graph.h5", "/graph", shape=(2, 2))
+            file.create_virtual_dataset("skeleton", layout, fillvalue=-99)
+        candidates = self.path / "one.csv"
+        candidates.write_text("frame\n2\n")
+        prior = backing.read_bytes()
+        code, _, error = invoke(
+            "dataset",
+            "append",
+            self.annotations,
+            "--source",
+            self.video,
+            "--frames",
+            candidates,
+            "--output",
+            backing,
+            "--overwrite",
+            "--gray",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("would replace an input", error)
+        self.assertEqual(backing.read_bytes(), prior)
+
+    def test_copy_through_symlink_preserves_relative_external_link(self):
+        metrics = self.path / "metrics.h5"
+        with h5py.File(metrics, "w") as file:
+            file["readings"] = [21, 42]
+        with h5py.File(self.annotations, "r+") as file:
+            file["metrics"] = h5py.ExternalLink(metrics.name, "/readings")
+        alias = self.path / "link" / "annotations.h5"
+        alias.parent.mkdir()
+        alias.symlink_to(self.annotations)
+        candidates = self.path / "one.csv"
+        candidates.write_text("frame\n2\n")
+        output = alias.parent / "expanded.h5"
+        self.succeeds(
+            "dataset",
+            "append",
+            alias,
+            "--source",
+            self.video,
+            "--frames",
+            candidates,
+            "--output",
+            output,
+            "--gray",
+        )
+        with h5py.File(output, "r") as file:
+            np.testing.assert_array_equal(file["metrics"][:], [21, 42])
+
+    def test_relocation_rejects_relative_virtual_metadata_atomically(self):
+        metrics = self.path / "metrics.h5"
+        with h5py.File(metrics, "w") as file:
+            file["readings"] = [21, 42]
+        with h5py.File(self.annotations, "r+") as file:
+            layout = h5py.VirtualLayout(shape=(2,), dtype=np.int32)
+            layout[:] = h5py.VirtualSource(metrics.name, "/readings", shape=(2,))
+            file.create_virtual_dataset("virtual_metrics", layout, fillvalue=-999)
+        candidates = self.path / "one.csv"
+        candidates.write_text("frame\n2\n")
+        output = self.path / "elsewhere" / "expanded.h5"
+        output.parent.mkdir()
+        output.write_bytes(b"prior output")
+        code, _, error = invoke(
+            "dataset",
+            "append",
+            self.annotations,
+            "--source",
+            self.video,
+            "--frames",
+            candidates,
+            "--output",
+            output,
+            "--overwrite",
+            "--gray",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("relative HDF5 backing paths", " ".join(error.split()))
+        self.assertEqual(output.read_bytes(), b"prior output")
+        with h5py.File(self.annotations, "r") as file:
+            np.testing.assert_array_equal(file["virtual_metrics"][:], [21, 42])

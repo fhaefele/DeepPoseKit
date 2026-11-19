@@ -238,44 +238,133 @@ def _external_links(file):
     return links
 
 
-def _external_dependencies(source):
-    source = input_file(source).absolute()
-    dependencies = set()
-
-    def add(name):
-        path = Path(fsdecode(name))
-        if path != Path("."):
-            dependencies.update(
-                (source.parent / path, source.resolve().parent / path, path.absolute())
+def _dependency_paths(owner, name):
+    path = Path(fsdecode(name))
+    if path == Path("."):
+        return (owner.resolve(),)
+    return tuple(
+        dict.fromkeys(
+            (
+                owner.resolve().parent / path,
+                owner.absolute().parent / path,
+                path.absolute(),
             )
+        )
+    )
 
-    def collect_storage(_name, obj):
-        if isinstance(obj, h5py.Dataset):
-            for filename, _, _ in obj.external or ():
-                add(filename)
-            if obj.is_virtual:
-                for mapping in obj.virtual_sources():
-                    add(mapping.file_name)
+
+def _external_dependencies(source):
+    source = input_file(source)
+    dependencies = set()
+    visited = set()
+
+    def collect(obj):
+        owner = Path(obj.file.filename)
+        identity = (owner.resolve(), h5py.h5o.get_info(obj.id).addr)
+        if identity in visited:
+            return
+        visited.add(identity)
+        if owner.resolve() != source.resolve():
+            dependencies.add(owner)
+        if isinstance(obj, h5py.Group):
+            for name, link in _external_links(obj).items():
+                dependencies.update(_dependency_paths(owner, link.filename))
+                target = obj.get(name)
+                if target is not None:
+                    collect(target)
+
+            def visit(_name, item):
+                if isinstance(item, h5py.Dataset):
+                    collect(item)
+
+            obj.visititems(visit)
+            return
+        for filename, _, _ in obj.external or ():
+            dependencies.update(_dependency_paths(owner, filename))
+        if obj.is_virtual:
+            for mapping in obj.virtual_sources():
+                backings = _dependency_paths(owner, mapping.file_name)
+                dependencies.update(backings)
+                for backing in backings:
+                    if not backing.is_file() or not h5py.is_hdf5(backing):
+                        continue
+                    with h5py.File(backing, "r") as file:
+                        target = file.get(mapping.dset_name)
+                        if isinstance(target, h5py.Dataset):
+                            collect(target)
 
     with h5py.File(source, "r") as file:
-        for link in _external_links(file).values():
-            add(link.filename)
-        file.visititems(collect_storage)
-        for key in ("skeleton", "skeleton_names"):
-            data = file.get(key)
-            if isinstance(data, h5py.Dataset):
-                if data.file.id != file.id:
-                    add(data.file.filename)
-                collect_storage(key, data)
+        collect(file)
     return dependencies
 
 
+def _check_metadata_relocation(original, destination):
+    if (
+        Path(original.filename).resolve().parent
+        == destination.absolute().parent.resolve()
+    ):
+        return
+
+    def check(name, data):
+        if name in ("skeleton", "skeleton_names") or not isinstance(data, h5py.Dataset):
+            return
+        names = [filename for filename, _, _ in data.external or ()]
+        if data.is_virtual:
+            names.extend(mapping.file_name for mapping in data.virtual_sources())
+        if any(
+            not path.is_absolute() and path != Path(".")
+            for path in map(lambda value: Path(fsdecode(value)), names)
+        ):
+            raise ValueError(
+                f"Cannot relocate metadata with relative HDF5 backing paths: {data.name}"
+            )
+
+    original.visititems(check)
+
+
+def _rebase_external_links(original, output):
+    owner = Path(original.filename)
+    rebased = []
+    for name, link in _external_links(output).items():
+        if Path(link.filename).is_absolute():
+            continue
+        before = original.get(name)
+        backing = (
+            Path(before.file.filename).absolute()
+            if before is not None and before.name == link.path
+            else owner.resolve().parent / link.filename
+        )
+        del output[name]
+        output[name] = h5py.ExternalLink(str(backing), link.path)
+        rebased.append(name)
+    return rebased
+
+
+def _check_rebased_links(source, destination, names):
+    if not names:
+        return
+    # Both owners must be read-only when HDF5 opens their shared backing files.
+    with h5py.File(source, "r") as original, h5py.File(destination, "r") as output:
+        for name in names:
+            before = original.get(name)
+            if before is None:
+                continue
+            after = output.get(name)
+            if after is None or (
+                Path(before.file.filename).resolve()
+                != Path(after.file.filename).resolve()
+                or h5py.h5o.get_info(before.id).addr != h5py.h5o.get_info(after.id).addr
+            ):
+                raise ValueError(f"Cannot preserve external HDF5 link: {name}")
+
+
 @contextmanager
-def _annotation_copy(source, destination, dataset):
+def _annotation_copy(source, destination, dataset, output_path):
     copyfile(source, destination)
     with h5py.File(source, "r") as original, h5py.File(destination, "r+") as output:
         _local_arrays(original, dataset)
         _local_arrays(output, dataset)
+        _check_metadata_relocation(original, output_path)
         # Resolve external skeleton objects relative to the source before relocation.
         for key in ("skeleton", "skeleton_names"):
             if key not in original:
@@ -297,14 +386,9 @@ def _annotation_copy(source, destination, dataset):
             inline = output.create_dataset(key, data=data[:], dtype=data.dtype)
             for name, value in data.attrs.items():
                 inline.attrs[name] = value
-        for name, link in _external_links(output).items():
-            backing = Path(link.filename)
-            if not backing.is_absolute():
-                del output[name]
-                output[name] = h5py.ExternalLink(
-                    str(source.absolute().parent / backing), link.path
-                )
+        rebased = _rebase_external_links(original, output)
         yield output
+    _check_rebased_links(source, destination, rebased)
 
 
 def _local_arrays(file, dataset):
@@ -357,7 +441,7 @@ def append(args):
     indices = _frame_indices(args.frames)
     with atomic_output(output, args.overwrite) as temporary:
         with (
-            _annotation_copy(args.annotations, temporary, args.dataset) as file,
+            _annotation_copy(args.annotations, temporary, args.dataset, output) as file,
             frame_batches(args, args.source) as batches,
         ):
             start = len(file[args.dataset])
@@ -392,7 +476,9 @@ def prelabel(args):
     if data.keypoints_shape[0] != model.predict_model.output_shape[1]:
         raise ValueError("Checkpoint and annotations have different keypoint counts")
     with atomic_output(output, args.overwrite) as temporary:
-        with _annotation_copy(args.annotations, temporary, args.dataset) as file:
+        with _annotation_copy(
+            args.annotations, temporary, args.dataset, output
+        ) as file:
             images, points, reviewed = _local_arrays(file, args.dataset)
             for start in range(0, len(images), args.batch_size):
                 end = start + args.batch_size

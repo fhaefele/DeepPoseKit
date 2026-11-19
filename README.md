@@ -291,7 +291,9 @@ its `frame` column or remove rows to choose what to append. Indices are
 zero-based and selected frames are appended in CSV order. Use the reader
 and spatial settings used during prediction. Appended keypoints start
 unreviewed. Prelabeling fills unreviewed keypoints with model suggestions
-and preserves reviewed keypoints and review flags.
+and preserves reviewed keypoints and review flags. For annotation files with
+relative virtual datasets, save the new file beside the source file so its
+backing paths still resolve.
 
 ```bash
 deepposekit dataset init diverse.h5 --video video.avi --skeleton skeleton.csv \
