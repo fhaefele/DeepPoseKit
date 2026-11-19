@@ -165,11 +165,11 @@ def _relative_layer_names(tensors):
     return relative
 
 
-def assign_legacy_weights(model, group, *, relative_layer_names=False):
+def assign_legacy_weights(model, group, *, existing_model=False):
     """Validate and read every tensor before changing any model weights."""
     source = _legacy_weights(group)
     target = _model_weights(model)
-    if relative_layer_names:
+    if existing_model:
         source = _relative_layer_names(source)
         target = _relative_layer_names(target)
     missing = target.keys() - source.keys()
@@ -192,5 +192,24 @@ def assign_legacy_weights(model, group, *, relative_layer_names=False):
             )
         assignments.append((variable, dataset[()]))
 
-    for variable, value in assignments:
-        variable.assign(value)
+    if not existing_model:
+        for variable, value in assignments:
+            variable.assign(value)
+        return
+
+    # Reuse the staging list for undo data so peak storage grows by at most
+    # one tensor. Include the current variable in case assign writes then fails.
+    attempted = 0
+    try:
+        for i, (variable, value) in enumerate(assignments):
+            assignments[i] = (variable, variable.numpy())
+            attempted += 1
+            variable.assign(value)
+    except Exception as error:
+        for i in reversed(range(attempted)):
+            variable, original = assignments[i]
+            try:
+                variable.assign(original)
+            except Exception as rollback_error:
+                error.add_note(f"Could not restore {variable.path}: {rollback_error}")
+        raise

@@ -9,6 +9,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import h5py
 import keras
@@ -203,6 +204,36 @@ class LegacyStackedDenseNetTest(unittest.TestCase):
                 model.predict_on_batch(self.frames[:1]), expected
             )
         self.assertEqual(_sha256(self.weights), checksum)
+
+    def test_backend_assignment_failure_restores_weights_and_predictions(self):
+        model = self._configured_model()
+        variables = model.train_model.weights
+        originals = [variable.numpy() for variable in variables]
+        frames = self.frames[:1]
+        prediction = model.predict_on_batch(frames)
+        last_variable = variables[-1]
+        assign = last_variable.assign
+        attempts = 0
+
+        def fail_after_first_write(value):
+            nonlocal attempts
+            attempts += 1
+            result = assign(value)
+            if attempts == 1:
+                raise RuntimeError("backend assignment interrupted")
+            return result
+
+        with patch.object(last_variable, "assign", side_effect=fail_after_first_write):
+            with self.assertRaisesRegex(RuntimeError, "backend assignment interrupted"):
+                load_legacy_weights(model, self.weights)
+
+        self.assertEqual(attempts, 2)
+        for variable, original in zip(variables, originals):
+            np.testing.assert_array_equal(variable.numpy(), original)
+        np.testing.assert_array_equal(model.predict_on_batch(frames), prediction)
+        self.assertEqual(
+            _sha256(self.weights), self.manifest["output_sha256"][self.weights.name]
+        )
 
 
 if __name__ == "__main__":

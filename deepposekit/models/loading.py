@@ -245,5 +245,5 @@ def load_legacy_weights(model, path):
     with h5py.File(path, "r") as checkpoint:
         if "model_config" in checkpoint.attrs or "model_weights" in checkpoint:
             raise ValueError("Use load_model for full DeepPoseKit checkpoints")
-        assign_legacy_weights(model.train_model, checkpoint, relative_layer_names=True)
+        assign_legacy_weights(model.train_model, checkpoint, existing_model=True)
     return model
