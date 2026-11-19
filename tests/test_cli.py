@@ -80,6 +80,17 @@ class TerminalTests(unittest.TestCase):
             )
         self.assertEqual(result.exception.code, 2)
 
+    def test_output_keeps_distinct_case_on_case_sensitive_storage(self):
+        from deepposekit.cli.operations import output_file
+
+        with TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "model.keras"
+            checkpoint.touch()
+            output = checkpoint.with_name("Model.keras")
+            if output.exists():
+                self.skipTest("Storage treats the paths as identical")
+            self.assertEqual(output_file(output, ".keras", False, checkpoint), output)
+
     def test_predict_preserves_literal_paths_after_an_option(self):
         with patch("deepposekit.cli.operations.run") as run:
             status, _, errors = invoke(
@@ -351,6 +362,14 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertIn("--overwrite", errors)
             self.assertEqual(existing.read_bytes(), b"existing prediction")
+            existing.unlink()
+            os.link(source, existing)
+            status, _, errors = invoke(
+                "predict", self.checkpoint, root, "--output-dir", output, "--overwrite"
+            )
+            self.assertEqual(status, 1)
+            self.assertIn("would replace an input", errors)
+            self.assertTrue(existing.samefile(source))
             load.assert_not_called()
 
     def test_recursive_legacy_reader_ignores_colocated_bytecode(self):

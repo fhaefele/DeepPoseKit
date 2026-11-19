@@ -39,7 +39,7 @@ def _check_output_file(path, suffix, overwrite, protected):
         raise ValueError(f"Output must end in {suffix}: {path}")
     if path.is_dir():
         raise ValueError(f"Output needs to be a file: {path}")
-    if _portable_path_key(path.resolve()) in protected:
+    if path.resolve() in protected:
         raise ValueError(f"Output would replace an input: {path}")
     if os.path.lexists(path) and not overwrite:
         raise FileExistsError(
@@ -53,7 +53,7 @@ def output_file(path, suffix, overwrite, *inputs):
         path,
         suffix,
         overwrite,
-        {_portable_path_key(Path(source).resolve()) for source in inputs},
+        {Path(source).resolve() for source in inputs},
     )
     if not path.parent.is_dir():
         raise ValueError(f"Output needs an existing parent directory: {path}")
@@ -279,6 +279,16 @@ def _scan_recordings(root, output_root, recursive, extensions, protected):
                 yield path, path.relative_to(root)
 
 
+def _file_identity(path):
+    try:
+        details = path.stat()
+    except FileNotFoundError:
+        return None
+    if details.st_ino:
+        return details.st_dev, details.st_ino
+    return None
+
+
 def _prediction_jobs(args, module, streams):
     protected = {args.checkpoint.resolve()}
     if args.custom_reader is not None:
@@ -320,7 +330,10 @@ def _prediction_jobs(args, module, streams):
             sources.append((input_file(path), Path(path.name)))
 
     protected.update(source.resolve() for source, _ in sources)
-    protected_keys = {_portable_path_key(path) for path in protected}
+    protected_files = (
+        {_file_identity(path) for path in protected} if args.overwrite else set()
+    )
+    protected_files.discard(None)
     for name in streams:
         if name is not None and (
             not name
@@ -361,7 +374,9 @@ def _prediction_jobs(args, module, streams):
                 raise ValueError(
                     f"Output collision for {destinations[key]} and {source}: {destination}"
                 )
-            _check_output_file(destination, ".npy", args.overwrite, protected_keys)
+            _check_output_file(destination, ".npy", args.overwrite, protected)
+            if args.overwrite and _file_identity(destination) in protected_files:
+                raise ValueError(f"Output would replace an input: {destination}")
             destinations[key] = source
             jobs.append((source, destination, name, opener))
     for _, destination, _, _ in jobs:
