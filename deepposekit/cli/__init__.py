@@ -28,12 +28,12 @@ def _count(value):
     return number
 
 
-def make_parser(color="auto", *, prog="deepposekit", configure_predict=None):
+def make_parser(
+    color="auto", *, prog="deepposekit", version=__version__, configure_predict=None
+):
     parser_type = partial(TerminalParser, color=color)
     parser = parser_type(prog=prog, description="Train and run pose estimation models.")
-    parser.add_argument(
-        "--version", action="version", version=f"%(prog)s {__version__}"
-    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {version}")
     commands = parser.add_subparsers(
         dest="command", metavar="COMMAND", parser_class=parser_type
     )
@@ -197,7 +197,7 @@ def make_parser(color="auto", *, prog="deepposekit", configure_predict=None):
     return parser
 
 
-def main(argv=None, *, prog="deepposekit", configure_predict=None):
+def main(argv=None, *, prog="deepposekit", version=__version__, configure_predict=None):
     """Run the CLI, optionally extending predict for an embedding command.
 
     configure_predict replaces the generic reader flags. It receives the
@@ -206,7 +206,10 @@ def main(argv=None, *, prog="deepposekit", configure_predict=None):
     """
     argv = sys.argv[1:] if argv is None else list(argv)
     parser = make_parser(
-        color_mode(argv), prog=prog, configure_predict=configure_predict
+        color_mode(argv),
+        prog=prog,
+        version=version,
+        configure_predict=configure_predict,
     )
     argcomplete.autocomplete(parser)
     # argparse treats "--" specially even inside a REMAINDER. Parse only the
