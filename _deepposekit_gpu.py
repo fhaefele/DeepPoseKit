@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import sys
 import sysconfig
 
@@ -31,8 +32,15 @@ def main():
     xla_flags = env.get("XLA_FLAGS", "")
     flag_text = xla_flags.lstrip()
     uses_flag_file = bool(flag_text) and not flag_text.startswith("-")
-    if not uses_flag_file and "--xla_gpu_cuda_data_dir" not in flag_text:
-        cuda_dir = str(cuda_compiler).replace("\\", "\\\\").replace('"', '\\"')
-        env["XLA_FLAGS"] = f'{xla_flags} --xla_gpu_cuda_data_dir="{cuda_dir}"'.strip()
+    if not uses_flag_file:
+        # Consume quoted values so flag-like text inside an option is ignored.
+        flags = re.finditer(
+            '(?:^|\\s)(--[^\\s=]+)(?:=(?:"(?:[^"\\\\]|\\\\.)*"|\'[^\']*\'|\\S*))?',
+            flag_text,
+            re.DOTALL,
+        )
+        if not any(match[1] == "--xla_gpu_cuda_data_dir" for match in flags):
+            cuda_dir = str(cuda_compiler).replace("\\", "\\\\").replace('"', '\\"')
+            env["XLA_FLAGS"] = f'{xla_flags} --xla_gpu_cuda_data_dir="{cuda_dir}"'.strip()
 
     os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)

@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import shlex
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -8,6 +9,7 @@ from unittest.mock import patch
 from _deepposekit_gpu import main
 
 
+@unittest.skipUnless(sys.platform == "linux", "GPU launcher supports Linux and WSL2")
 class GPULauncherTests(unittest.TestCase):
     def launch_flags(self, flags):
         with tempfile.TemporaryDirectory() as directory:
@@ -39,4 +41,15 @@ class GPULauncherTests(unittest.TestCase):
         self.assertEqual(
             shlex.split(actual),
             ["--xla_gpu_autotune_level=0", f"--xla_gpu_cuda_data_dir={compiler}"],
+        )
+
+    def test_flag_name_inside_another_value_does_not_hide_default(self):
+        original = '--xla_dump_to="/tmp/--xla_gpu_cuda_data_dir investigation"'
+        actual, compiler = self.launch_flags(original)
+        self.assertEqual(
+            shlex.split(actual),
+            [
+                "--xla_dump_to=/tmp/--xla_gpu_cuda_data_dir investigation",
+                f"--xla_gpu_cuda_data_dir={compiler}",
+            ],
         )
