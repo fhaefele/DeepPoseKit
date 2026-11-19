@@ -72,6 +72,8 @@ class FlipAxis(meta.Augmenter):
     """
 
     def __init__(self, swap_index, p=0.5, axis=0, seed=None, name=None, deterministic=False):
+        if not isinstance(axis, (int, np.integer)) or axis not in (0, 1):
+            raise ValueError("FlipAxis axis must be 0 (vertical) or 1 (horizontal)")
         super(FlipAxis, self).__init__(seed=seed, name=name, random_state="deprecated", deterministic=deterministic)
         self.p = iap.handle_probability_param(p, "p")
         self.axis = axis

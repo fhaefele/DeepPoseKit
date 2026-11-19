@@ -13,11 +13,12 @@ import tomllib
 import warnings
 
 import h5py
-import imgaug.augmenters as iaa
 import keras
 import numpy as np
 
-from deepposekit import FlipAxis, callbacks
+from deepposekit import callbacks
+from deepposekit.cli.augmentations import build_augmenters
+from deepposekit.cli.components import builtin_class, named_list, named_spec
 from deepposekit.cli.operations import (
     annotation_summary,
     atomic_output,
@@ -187,44 +188,6 @@ def read_training_config(path, *, for_weights=False):
     )
 
 
-def _named_spec(value, what):
-    if isinstance(value, str):
-        return value, {}
-    if isinstance(value, dict) and isinstance(value.get("name"), str):
-        return value["name"], {key: val for key, val in value.items() if key != "name"}
-    raise ValueError(f"{what} must be a name or a table containing 'name'")
-
-
-def _named_list(values, what):
-    if not isinstance(values, list):
-        raise ValueError(f"{what} must be a list of named configurations")
-    return (_named_spec(value, what) for value in values)
-
-
-def _builtin_class(namespace, name, base):
-    constructor = getattr(namespace, name, None)
-    if (
-        not isinstance(constructor, type)
-        or not issubclass(constructor, base)
-        or constructor is base
-    ):
-        raise ValueError(f"Unknown built-in {namespace.__name__} component: {name}")
-    return constructor
-
-
-def _augmenter(data, name, parameters):
-    parameters = dict(parameters)
-    for key in ("children", "then_list", "else_list"):
-        if key in parameters:
-            parameters[key] = [
-                _augmenter(data, *spec)
-                for spec in _named_list(parameters[key], "augmenter")
-            ]
-    if name == "FlipAxis":
-        return FlipAxis(data, **parameters)
-    return _builtin_class(iaa, name, iaa.Augmenter)(**parameters)
-
-
 def _data_and_generator(config, stored=None):
     annotation_summary(config.annotations, config.data_options.get("dataset", "images"))
     data = DataGenerator(str(config.annotations), **config.data_options)
@@ -234,10 +197,7 @@ def _data_and_generator(config, stored=None):
         options.update({key: stored[key] for key in allowed & stored.keys()})
     options.update(config.generator_options)
     if "augmenter" in options:
-        options["augmenter"] = [
-            _augmenter(data, *spec)
-            for spec in _named_list(options["augmenter"], "[generator].augmenter")
-        ] or None
+        options["augmenter"] = build_augmenters(data, options["augmenter"]) or None
     if "downsample_factor" in options:
         _integer(options["downsample_factor"], 0, "[generator].downsample_factor")
     sigma = options.get("sigma", 5)
@@ -263,7 +223,7 @@ def _keras_option(value, namespace):
         return value
     if not isinstance(value.get("name"), str):
         return {key: _keras_option(item, namespace) for key, item in value.items()}
-    name, parameters = _named_spec(value, namespace.__name__)
+    name, parameters = named_spec(value, namespace.__name__)
     obj = namespace.get(name)
     if not hasattr(obj, "get_config"):
         if parameters:
@@ -450,13 +410,13 @@ def _callback_list(config, selected, overwrite, resources, *, run_id=None):
     reserved = set(protected)
     specs = []
     destinations = []
-    for name, options in _named_list(
+    for name, options in named_list(
         config.fit_options.get("callbacks", []), "[training].callbacks"
     ):
         namespace = (
             callbacks if name in {"Logger", "ModelCheckpoint"} else keras.callbacks
         )
-        callback_type = _builtin_class(namespace, name, keras.callbacks.Callback)
+        callback_type = builtin_class(namespace, name, keras.callbacks.Callback)
         if name == "TensorBoard":
             options.setdefault("log_dir", "logs")
         for key in ("filepath", "filename", "log_dir", "backup_dir"):

@@ -218,6 +218,93 @@ The callback supplies reader options on the shared prediction parser and can
 translate them into `custom_reader` and `custom_reader_args`. Help and completion
 use the downstream command name and the same parser.
 
+### Preview training augmentations
+
+```bash
+deepposekit imgaug list
+deepposekit imgaug toml Affine FlipAxis GaussianBlur
+deepposekit imgaug preview --config training.toml \
+  --frame 42 --samples 8 --seed 17 --output preview.png
+```
+
+Copy the generated array into `[generator].augmenter`. Some imgaug classes
+need extra parameters or use APIs unavailable in the installed NumPy.
+`imgaug toml` reports when it cannot produce a working starter. The transforms run
+in the order listed. Preview uses the training pipeline on a labeled image
+and overlays the corresponding keypoints on the original and each variant.
+A minimal config uses the same sections as a full training config.
+
+```toml
+[data]
+annotations = "fly-annotations.h5"
+
+[generator]
+augmenter = [
+  { name = "Affine", rotate = 5 },
+  { name = "FlipAxis", axis = 1, p = 0.5 },
+  { name = "GaussianBlur", sigma = 0.5 },
+]
+```
+
+Use repeatable `--augment` flags to try an ordered pipeline from the command
+line. These flags replace the entire config pipeline when supplied together
+with `--config`. Use `--annotations` to override the annotation path, and
+`--output` to save a grid on a machine without a display. Frame indices are
+zero-based rows in the annotation HDF5 file. Use `--rgb` for color datasets
+stored in RGB order instead of OpenCV's BGR order.
+
+```bash
+deepposekit imgaug preview --annotations fly-annotations.h5 \
+  --augment '{ name = "Affine", rotate = 15 }' \
+  --augment '{ name = "FlipAxis", axis = 1, p = 0.5 }' \
+  --frame 42 --output preview.png
+```
+
+### Review and refine predictions
+
+```bash
+deepposekit predictions view predictions.npy --source video.avi --gray
+deepposekit predictions view predictions.npy --source video.avi --gray \
+  --skeleton skeleton.csv --start 40 --stop 100 --output review.mp4 --fps 30
+deepposekit predictions trace predictions.npy --keypoint 0 --output trace.png
+```
+
+The viewer overlays saved predictions on source frames. Use the same reader
+and preprocessing from prediction, including `--custom-reader` and any forwarded
+arguments. Use `--start` and `--stop` to select a zero-based, half-open frame
+range. For headless review, export an AVI or MP4. `--fps` sets export playback
+speed. The trace plots x, y, confidence, and the x–y trajectory from the
+prediction array. A skeleton CSV or annotation HDF5 supplied with
+`--skeleton` provides edges for overlays or keypoint names for traces. Use
+`--keypoint-name` to select a numeric name that also matches a column index.
+
+```bash
+deepposekit predictions outliers predictions.npy --top 50 --output candidates.csv
+deepposekit dataset append annotations.h5 --source video.avi --gray \
+  --frames candidates.csv --output annotations-expanded.h5
+deepposekit dataset prelabel annotations-expanded.h5 --model fly.keras \
+  --output annotations-prelabeled.h5
+```
+
+The outlier CSV ranks frames by confidence drops and keypoint jumps. Edit
+its `frame` column or remove rows to choose what to append. Indices are
+zero-based and selected frames are appended in CSV order. Use the reader
+and spatial settings used during prediction. Appended keypoints start
+unreviewed. Prelabeling fills unreviewed keypoints with model suggestions
+and preserves reviewed keypoints and review flags. For annotation files with
+relative virtual datasets, save the new file beside the source file so its
+backing paths still resolve.
+
+```bash
+deepposekit dataset init diverse.h5 --video video.avi --skeleton skeleton.csv \
+  --gray --sample diverse --count 100 --frame-step 10 --seed 17
+```
+
+Diversity sampling clusters downsampled images and selects actual source
+frames from across clusters. `--frame-step` sets the candidate stride.
+`--count` sets the number of frames saved, and `--seed` makes the selection
+repeatable.
+
 ### Help, completion, and environment
 
 Run `deepposekit train --help` for command-specific flags and

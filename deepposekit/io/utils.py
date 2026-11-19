@@ -39,7 +39,7 @@ def initialize_skeleton(skeleton):
 
     if isinstance(skeleton, str):
         if skeleton.endswith(".csv"):
-            skeleton = pd.read_csv(skeleton)
+            skeleton = pd.read_csv(skeleton, dtype={"name": str, "parent": str, "swap": str})
         elif skeleton.endswith(".xlsx"):
             skeleton = pd.read_excel(skeleton)
         else:
