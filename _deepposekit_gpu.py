@@ -1,6 +1,5 @@
 """Launch Python with the CUDA libraries bundled by the GPU extra."""
 
-import json
 import os
 from pathlib import Path
 import sys
@@ -30,8 +29,10 @@ def main():
     env["PATH"] = os.pathsep.join((str(compiler_bin), env.get("PATH", os.defpath)))
 
     xla_flags = env.get("XLA_FLAGS", "")
-    if "--xla_gpu_cuda_data_dir" not in xla_flags:
-        cuda_dir = json.dumps(str(cuda_compiler))
-        env["XLA_FLAGS"] = f"{xla_flags} --xla_gpu_cuda_data_dir={cuda_dir}".strip()
+    flag_text = xla_flags.lstrip()
+    uses_flag_file = bool(flag_text) and not flag_text.startswith("-")
+    if not uses_flag_file and "--xla_gpu_cuda_data_dir" not in flag_text:
+        cuda_dir = str(cuda_compiler).replace("\\", "\\\\").replace('"', '\\"')
+        env["XLA_FLAGS"] = f'{xla_flags} --xla_gpu_cuda_data_dir="{cuda_dir}"'.strip()
 
     os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)

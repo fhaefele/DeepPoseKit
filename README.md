@@ -10,6 +10,8 @@ Keras 3, and a locked uv environment. [Original DeepPoseKit paper](https://doi.o
 
 ## Installation
 
+On a minimal Ubuntu 24.04 or WSL2 install, run `sudo apt update && sudo apt install libgl1 libglib2.0-0t64` for OpenCV.
+
 ```bash
 git clone https://github.com/fhaefele/DeepPoseKit.git
 cd DeepPoseKit
@@ -26,8 +28,14 @@ from the locked environment. [TensorFlow GPU installation guide](https://www.ten
 ```bash
 nvidia-smi
 uv sync --locked --extra gpu
-uv run --locked --extra gpu deepposekit-gpu -c \
-  'import tensorflow as tf; devices = tf.config.list_physical_devices("GPU"); assert devices, "No GPU detected"; print(devices)'
+uv run --locked --extra gpu deepposekit-gpu - <<'PYTHON'
+import tensorflow as tf
+from deepposekit.models import StackedDenseNet
+
+devices = tf.config.list_physical_devices("GPU")
+assert devices, "No GPU detected"
+print(devices)
+PYTHON
 ```
 
 Use `uv run --locked --extra gpu deepposekit-gpu your_script.py` for the training
@@ -68,7 +76,8 @@ its encoder locally.
 ## Import a full checkpoint and predict
 
 The example uses `best_model_densenet.h5` and `video.avi` from the public fly
-dataset. Run the script with `uv run --locked python your_script.py`.
+dataset. Run your script with `uv run --locked python your_script.py` for
+the base install or `uv run --locked --extra gpu deepposekit-gpu your_script.py` on GPU.
 [Public example files](https://github.com/jgraving/DeepPoseKit-Data/tree/0aa5e3f5e8f9df63c48ba2bf491354472daa3e7e/datasets/fly)
 
 ```python
