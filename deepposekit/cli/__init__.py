@@ -206,9 +206,11 @@ def main(argv=None):
     args, extra = parser.parse_known_args(argv[: index + 1])
     # A variadic positional stops at the first option. Keep accepting input
     # and output paths separated by flags, as in the original predict syntax.
-    if args.command == "predict" and all(not token.startswith("-") for token in extra):
-        args.paths.extend(map(Path, extra))
-        extra = []
+    if args.command == "predict":
+        stop = extra.index("--") if "--" in extra else len(extra)
+        if all(not token.startswith("-") for token in extra[:stop]):
+            args.paths.extend(map(Path, extra[:stop] + extra[stop + 1 :]))
+            extra = []
     if extra:
         parser.error(f"unrecognized arguments: {' '.join(extra)}")
     if index < len(argv):

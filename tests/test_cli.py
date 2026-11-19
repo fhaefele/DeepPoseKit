@@ -80,6 +80,21 @@ class TerminalTests(unittest.TestCase):
             )
         self.assertEqual(result.exception.code, 2)
 
+    def test_predict_preserves_literal_paths_after_an_option(self):
+        with patch("deepposekit.cli.operations.run") as run:
+            status, _, errors = invoke(
+                "predict",
+                "model.keras",
+                "clip.avi",
+                "--gray",
+                "--",
+                "-output.npy",
+            )
+        self.assertEqual(status, 0, errors)
+        args = run.call_args.args[0]
+        self.assertEqual(args.paths, [Path("clip.avi"), Path("-output.npy")])
+        self.assertTrue(args.gray)
+
     @unittest.skipUnless(
         sys.platform != "win32", "Shell completion harness uses Unix shells."
     )
@@ -305,7 +320,7 @@ class WorkflowTests(unittest.TestCase):
         root.mkdir()
         source = root / "sample.avi"
         source.touch()
-        duplicate = root / "sample.mkv"
+        duplicate = root / "Sample.mkv"
         duplicate.touch()
         output = self.path / "conflicting-output"
         with patch("deepposekit.cli.operations.load_model") as load:
@@ -337,6 +352,50 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("--overwrite", errors)
             self.assertEqual(existing.read_bytes(), b"existing prediction")
             load.assert_not_called()
+
+    def test_recursive_legacy_reader_ignores_colocated_bytecode(self):
+        root = self.path / "colocated-reader"
+        cache = root / "__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "reader.cpython-312.pyc").write_bytes(b"stale bytecode")
+        recording = root / "a.npy"
+        np.save(recording, self.images)
+        fixture = root / "reader.py"
+        fixture.write_text(
+            "import numpy as np\n"
+            "def create_reader(path, *, batch_size, argv):\n"
+            "    yield np.load(path)\n"
+        )
+        with patch("deepposekit.cli.operations.load_model") as load:
+            status, _, errors = invoke(
+                "predict",
+                self.checkpoint,
+                root,
+                "--output-dir",
+                root,
+                "--custom-reader",
+                fixture,
+            )
+        self.assertEqual(status, 1)
+        self.assertIn("separate --output-dir", errors)
+        load.assert_not_called()
+        output = root / "predictions"
+        with patch("deepposekit.cli.operations.load_model", return_value=self.model):
+            status, _, errors = invoke(
+                "predict",
+                self.checkpoint,
+                root,
+                "--recursive",
+                "--output-dir",
+                output,
+                "--custom-reader",
+                fixture,
+            )
+        self.assertEqual(status, 0, errors)
+        self.assertEqual(list(output.rglob("*.npy")), [output / "a.npy"])
+        self.assertEqual(
+            [path.name for path in cache.iterdir()], ["reader.cpython-312.pyc"]
+        )
 
     def test_custom_reader_batches_keep_arguments_and_completed_outputs(self):
         root = self.path / "reader-input"

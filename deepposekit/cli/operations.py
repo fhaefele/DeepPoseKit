@@ -9,6 +9,7 @@ import re
 from shutil import copyfileobj
 import sys
 from tempfile import TemporaryDirectory, TemporaryFile
+from unicodedata import normalize
 from uuid import uuid4
 
 import h5py
@@ -28,12 +29,17 @@ def input_file(path):
     return path
 
 
+def _portable_path_key(path):
+    # Outputs may be on a case-insensitive volume, even on POSIX.
+    return normalize("NFC", os.path.normcase(path).casefold())
+
+
 def _check_output_file(path, suffix, overwrite, protected):
     if path.suffix != suffix:
         raise ValueError(f"Output must end in {suffix}: {path}")
     if path.is_dir():
         raise ValueError(f"Output needs to be a file: {path}")
-    if path.resolve() in protected:
+    if _portable_path_key(path.resolve()) in protected:
         raise ValueError(f"Output would replace an input: {path}")
     if os.path.lexists(path) and not overwrite:
         raise FileExistsError(
@@ -44,7 +50,10 @@ def _check_output_file(path, suffix, overwrite, protected):
 def output_file(path, suffix, overwrite, *inputs):
     path = Path(path)
     _check_output_file(
-        path, suffix, overwrite, {Path(source).resolve() for source in inputs}
+        path,
+        suffix,
+        overwrite,
+        {_portable_path_key(Path(source).resolve()) for source in inputs},
     )
     if not path.parent.is_dir():
         raise ValueError(f"Output needs an existing parent directory: {path}")
@@ -166,7 +175,12 @@ def custom_reader_module(path):
     module = module_from_spec(spec)
     sys.modules[name] = module
     try:
-        spec.loader.exec_module(module)
+        # Load the explicitly selected source without creating a bytecode file
+        # in the recording directory.
+        exec(
+            compile(path.read_bytes(), str(path), "exec", dont_inherit=True),
+            vars(module),
+        )
         if not callable(getattr(module, "create_reader", None)):
             raise ValueError(
                 "Custom reader must define create_reader(path, *, batch_size, argv)"
@@ -248,7 +262,9 @@ def _scan_recordings(root, output_root, recursive, extensions, protected):
     for directory, subdirs, filenames in root.walk(on_error=_raise_scan_error):
         subdirs[:] = (
             sorted(
-                name for name in subdirs if (directory / name).resolve() != output_root
+                name
+                for name in subdirs
+                if name != "__pycache__" and (directory / name).resolve() != output_root
             )
             if recursive
             else []
@@ -279,14 +295,21 @@ def _prediction_jobs(args, module, streams):
 
     output_root = args.output_dir.resolve()
     sources = []
+    unfiltered_roots = []
     for path in args.paths:
         if path.is_dir():
+            extensions = _directory_extensions(module)
+            root = path.resolve()
+            if (extensions is None or ".npy" in extensions) and (
+                output_root == root or not output_root.is_relative_to(root)
+            ):
+                unfiltered_roots.append(root)
             found = list(
                 _scan_recordings(
                     path,
                     output_root,
                     args.recursive,
-                    _directory_extensions(module),
+                    extensions,
                     protected,
                 )
             )
@@ -297,6 +320,7 @@ def _prediction_jobs(args, module, streams):
             sources.append((input_file(path), Path(path.name)))
 
     protected.update(source.resolve() for source, _ in sources)
+    protected_keys = {_portable_path_key(path) for path in protected}
     for name in streams:
         if name is not None and (
             not name
@@ -327,18 +351,23 @@ def _prediction_jobs(args, module, streams):
                     break
                 if os.path.lexists(ancestor):
                     raise ValueError(f"Output parent is not a directory: {ancestor}")
-            key = os.path.normcase(parent / filename)
+            output_path = parent / filename
+            if any(output_path.is_relative_to(root) for root in unfiltered_roots):
+                raise ValueError(
+                    "Use a separate --output-dir when the reader's directory scan includes .npy files"
+                )
+            key = _portable_path_key(output_path)
             if key in destinations:
                 raise ValueError(
                     f"Output collision for {destinations[key]} and {source}: {destination}"
                 )
-            _check_output_file(destination, ".npy", args.overwrite, protected)
+            _check_output_file(destination, ".npy", args.overwrite, protected_keys)
             destinations[key] = source
             jobs.append((source, destination, name, opener))
     for _, destination, _, _ in jobs:
         parent = destination.parent.resolve()
         for ancestor in (parent, *parent.parents):
-            if os.path.normcase(ancestor) in destinations:
+            if _portable_path_key(ancestor) in destinations:
                 raise ValueError(
                     f"Output path is also needed as a directory: {ancestor}"
                 )

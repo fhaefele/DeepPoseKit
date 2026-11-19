@@ -192,13 +192,15 @@ deepposekit predict model.keras recordings/ --recursive --output-dir predictions
 A batch loads the checkpoint once and writes one `.npy` per recording. The
 CLI creates the output directory and preserves paths relative to each input
 directory. It scans common video extensions with the built-in reader. Add
-`--recursive` to include subfolders. Output collisions fail before prediction.
-If a recording fails during inference, previous completed outputs remain.
+`--recursive` to include subfolders. Output collisions fail before prediction,
+including names that differ only by case. If a recording fails during inference,
+previous completed outputs remain.
 
 Custom reader flags apply to every input. A reader may declare
 `INPUT_EXTENSIONS = (".h5", ".hdf5")` to filter directory scans. When a custom
-reader omits that setting, all regular input files are candidates. For
-recordings with several streams, a reader can also define
+reader omits that setting, all regular input files are candidates. Choose a
+separate output directory for readers whose scans include `.npy` files.
+For recordings with several streams, a reader can also define
 `prediction_streams(argv)` and return a dictionary mapping output suffixes
 to factories that accept `(path, *, batch_size)`. Use `--output-dir` with
 multiple streams. For example, a stream named `Camera1` writes
