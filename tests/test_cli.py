@@ -1,4 +1,5 @@
 from contextlib import ExitStack, chdir, redirect_stderr, redirect_stdout
+from importlib.machinery import ModuleSpec
 from io import StringIO
 import json
 import os
@@ -40,24 +41,21 @@ class TerminalTests(unittest.TestCase):
             setup.assert_not_called()
 
     def test_cuda_restart_preserves_interpreter_options_for_module_launches(self):
-        original = [
-            sys.executable,
-            "-I",
-            "-O",
-            "-W",
-            "ignore",
-            "-m",
-            "deepposekit",
-            "doctor",
-        ]
-        with (
-            patch.object(sys, "orig_argv", original),
-            patch.object(sys, "argv", ["deepposekit/__main__.py", "doctor"]),
-            patch("_deepposekit_gpu.prepare_cuda") as setup,
-            patch("deepposekit.cli.operations.run"),
+        spec = ModuleSpec("deepposekit.__main__", loader=None)
+        for original in (
+            ["-I", "-O", "-W", "ignore", "-m", "deepposekit", "doctor"],
+            ["-IOm", "deepposekit", "doctor"],
         ):
-            self.assertEqual(console_main(), 0)
-        setup.assert_called_once_with(["-P", *original[1:]])
+            with (
+                self.subTest(argv=original),
+                patch.object(sys.modules["__main__"], "__spec__", spec),
+                patch.object(sys, "orig_argv", [sys.executable, *original]),
+                patch.object(sys, "argv", ["deepposekit/__main__.py", "doctor"]),
+                patch("_deepposekit_gpu.prepare_cuda") as setup,
+                patch("deepposekit.cli.operations.run"),
+            ):
+                self.assertEqual(console_main(), 0)
+                setup.assert_called_once_with(["-P", *original])
 
     def test_completion_skips_cuda_setup(self):
         with (
@@ -852,7 +850,7 @@ class WorkflowTests(unittest.TestCase):
         second.write_text(content.replace("model.keras", "second.keras"))
         reserved = self.path / "reserved-backup"
         with ExitStack() as resources:
-            (callback,) = _callback_list(
+            (callback,), _ = _callback_list(
                 read_training_config(first), None, False, resources
             )
             callback.on_train_end()
@@ -868,9 +866,17 @@ class WorkflowTests(unittest.TestCase):
         content = self.config.read_text().replace("model.keras", "recovery.keras")
         config.write_text(
             content.replace(
-                '"TerminateOnNaN"', '{name="BackupAndRestore", backup_dir="recovery"}'
+                'pretrained_weights = "none"', 'pretrained_weights = "unused.h5"'
+            ).replace(
+                '"TerminateOnNaN"',
+                '{name="Logger", filepath="recovery-metrics.h5", verbose=0}, '
+                '{name="BackupAndRestore", backup_dir="recovery"}',
             )
         )
+        backup = self.path / "recovery"
+        backup.mkdir()
+        inactive = backup / "latest.weights.h5.bkp"
+        inactive.write_bytes(b"inactive prior generation")
         expected_weights = []
 
         def fail_publication(model, *args, **kwargs):
@@ -880,13 +886,17 @@ class WorkflowTests(unittest.TestCase):
         with patch.object(
             BaseModel, "save", autospec=True, side_effect=fail_publication
         ):
-            status, _, errors = invoke("train", config)
+            status, _, errors = invoke("train", config, "--overwrite")
         self.assertEqual(status, 1)
         self.assertIn("concurrent output", errors)
-        backup = self.path / "recovery"
         self.assertTrue((backup / "latest.weights.h5").is_file())
         self.assertTrue((backup / "training_metadata.json").is_file())
         self.assertTrue((backup / "completed.weights.h5").is_file())
+        metrics = self.path / "recovery-metrics.h5"
+        with h5py.File(metrics, "r") as file:
+            self.assertEqual(len(file["logs/loss"]), 1)
+            self.assertTrue(np.isfinite(file["logs/loss"][0]))
+        prior_metrics = metrics.read_bytes()
         with patch.object(
             BaseModel, "fit", side_effect=AssertionError("unexpected fit")
         ):
@@ -897,7 +907,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(model.train_model.get_weights()), len(expected_weights))
         for actual, expected in zip(model.train_model.get_weights(), expected_weights):
             np.testing.assert_array_equal(actual, expected)
-        self.assertFalse(list(backup.iterdir()))
+        self.assertEqual(metrics.read_bytes(), prior_metrics)
+        self.assertEqual(list(backup.iterdir()), [inactive])
+        self.assertEqual(inactive.read_bytes(), b"inactive prior generation")
 
     def test_fine_tune_reuses_normalized_leap_constructor_options(self):
         config = self.path / "leap.toml"

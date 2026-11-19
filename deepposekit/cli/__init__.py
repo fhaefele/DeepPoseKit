@@ -262,14 +262,12 @@ def main(
         if executable and cuda_module is not None:
             from _deepposekit_gpu import prepare_cuda
 
-            original = sys.orig_argv[1:]
-            launcher = original[: len(original) - len(argv)]
-            if launcher[-2:] == ["-m", cuda_module] or launcher[-1:] == [
-                f"-m{cuda_module}"
-            ]:
-                prepare_cuda(["-P", *original])
+            main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+            if main_spec is not None and main_spec.name == f"{cuda_module}.__main__":
+                launch = sys.orig_argv[1:]
             else:
-                prepare_cuda(["-P", "-m", cuda_module, *argv])
+                launch = ["-m", cuda_module, *argv]
+            prepare_cuda(["-P", *launch])
 
         from deepposekit.cli import operations
 

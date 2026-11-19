@@ -360,18 +360,27 @@ class _TrainingBackup(keras.callbacks.BackupAndRestore):
             yield from generation
 
     def store_completed(self, training_model, run_id):
+        owned = self._written | {self._completed_path}
         self._completed_path.parent.mkdir(parents=True, exist_ok=True)
         with atomic_output(self._completed_path, overwrite=True) as temporary:
             training_model.save_weights(temporary)
             with h5py.File(temporary, "r+") as weights:
                 weights.attrs["deepposekit_training_run"] = run_id
-        self._written.add(self._completed_path)
+                weights.attrs["deepposekit_backup_files"] = json.dumps(
+                    sorted(path.name for path in owned)
+                )
+        self._written = owned
 
-    def has_completed(self, run_id):
-        if not self._completed_path.is_file():
+    def recover_completed(self, run_id):
+        if run_id is None or not self._completed_path.is_file():
             return False
         with h5py.File(self._completed_path, "r") as weights:
-            return weights.attrs.get("deepposekit_training_run") == run_id
+            if weights.attrs.get("deepposekit_training_run") != run_id:
+                return False
+            owned = json.loads(weights.attrs.get("deepposekit_backup_files", "[]"))
+        self._written = {path for path in self.files if path.name in owned}
+        self._written.add(self._completed_path)
+        return True
 
     def restore_completed(self, training_model):
         optimizer = training_model.optimizer
@@ -393,9 +402,9 @@ class _TrainingBackup(keras.callbacks.BackupAndRestore):
         # Keep the recovery files until publication succeeds.
         return
 
-    def finalize(self, *, recovered):
+    def finalize(self):
         if self.delete_checkpoint:
-            for path in self.files if recovered else self._written:
+            for path in self._written:
                 path.unlink(missing_ok=True)
 
 
@@ -426,7 +435,7 @@ def _reserve_callback_path(path, directory, resources):
         resources.callback(_discard_empty_file, path, created)
 
 
-def _callback_list(config, selected, overwrite, resources):
+def _callback_list(config, selected, overwrite, resources, *, run_id=None):
     protected = {
         path.resolve()
         for path in (
@@ -477,22 +486,36 @@ def _callback_list(config, selected, overwrite, resources):
                     f"Callback output is already in use: {path}"
                 ) from error
 
+    backups = {}
+    for index, (name, _, options) in enumerate(specs):
+        if name != "BackupAndRestore":
+            continue
+        callback = _TrainingBackup(**options)
+        for path in callback.files:
+            _check_callback_path(path, protected)
+            if path.is_symlink() or path.exists() and not path.is_file():
+                raise ValueError(f"Expected a regular backup file at {path}")
+        backups[index] = callback
+
+    # A publication retry must leave metrics and other training outputs intact.
+    recovered = [
+        backup for backup in backups.values() if backup.recover_completed(run_id)
+    ]
+    if recovered:
+        return [], recovered
+
     result = []
-    for name, callback_type, options in specs:
-        if name == "ModelCheckpoint":
+    for index, (name, callback_type, options) in enumerate(specs):
+        if index in backups:
+            callback = backups[index]
+        elif name == "ModelCheckpoint":
             callback = _TrainingCheckpoint(
                 reserved=reserved, overwrite=overwrite, **options
             )
-        elif name == "BackupAndRestore":
-            callback = _TrainingBackup(**options)
-            for path in callback.files:
-                _check_callback_path(path, protected)
-                if path.is_symlink() or path.exists() and not path.is_file():
-                    raise ValueError(f"Expected a regular backup file at {path}")
         else:
             callback = callback_type(**options)
         result.append(callback)
-    return result
+    return result, []
 
 
 def _available_steps(model, fit):
@@ -554,8 +577,15 @@ def _fine_tune(config, source):
     return load_model(source, generator=generator, compile=False)
 
 
-def _training_run_id(config, inputs, output):
+def _training_run_id(config, selected, output):
     digest = sha256(config.source.read_bytes())
+    inputs = [config.source, config.annotations]
+    if selected is not None:
+        inputs.append(selected)
+    elif config.model_name != "StackedDenseNet" or config.model_options.get(
+        "pretrained"
+    ):
+        inputs.extend(_initial_weight_paths(config))
     identity = []
     for path in inputs:
         stat = path.stat()
@@ -568,7 +598,7 @@ def _training_run_id(config, inputs, output):
                 stat.st_mtime_ns,
             )
         )
-    digest.update(json.dumps([str(output.resolve()), identity]).encode())
+    digest.update(json.dumps([str(output.absolute()), identity]).encode())
     return digest.hexdigest()
 
 
@@ -598,19 +628,17 @@ def train(args):
                 compile_options[key] = _keras_option(compile_options[key], namespace)
         model.compile(**compile_options)
         fit = dict(config.fit_options)
+        recovered = []
         if "callbacks" in fit:
-            fit["callbacks"] = _callback_list(
-                config, selected, args.overwrite, resources
+            run_id = _training_run_id(config, selected, output)
+            fit["callbacks"], recovered = _callback_list(
+                config, selected, args.overwrite, resources, run_id=run_id
             )
-        backups = [
+        backups = recovered or [
             callback
             for callback in fit.get("callbacks", ())
             if isinstance(callback, _TrainingBackup)
         ]
-        recovered = []
-        if backups:
-            run_id = _training_run_id(config, protected, output)
-            recovered = [backup for backup in backups if backup.has_completed(run_id)]
         if recovered:
             recovered[0].restore_completed(model.train_model)
         else:
@@ -622,5 +650,5 @@ def train(args):
                 backup.store_completed(model.train_model, run_id)
         model.save(output, overwrite=args.overwrite)
         for backup in backups:
-            backup.finalize(recovered=backup in recovered)
+            backup.finalize()
     print(output)
