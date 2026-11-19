@@ -10,7 +10,7 @@ from backbone_test_utils import BackboneWorkflowMixin
 from deepposekit.io import TrainingGenerator
 from deepposekit.io.BaseGenerator import BaseGenerator
 from deepposekit.models import DeepLabCut, load_model
-from deepposekit.models._checkpoint import assign_legacy_weights
+from deepposekit.models._checkpoint import assign_legacy_weights, normalize_legacy_graph
 
 
 class MemoryAnnotations(BaseGenerator):
@@ -162,6 +162,23 @@ class DeepLabCutWorkflowTests(unittest.TestCase):
                     ValueError, "Duplicate legacy tensor identity"
                 ):
                     assign_legacy_weights(model, file)
+
+    def test_legacy_separable_convolution_uses_its_own_kernel_options(self):
+        inputs = keras.Input((4, 4, 3))
+        x = keras.layers.SeparableConv2D(
+            2, 1, depthwise_initializer="ones", pointwise_initializer="ones"
+        )(inputs)
+        model = keras.Model(inputs, x)
+        config = model.get_config()
+        separable = config["layers"][-1]["config"]
+        separable.update(
+            kernel_initializer="zeros",
+            kernel_regularizer=None,
+            kernel_constraint=None,
+        )
+        reloaded = keras.Model.from_config(normalize_legacy_graph(config))
+        frames = np.ones((1, 4, 4, 3), dtype=np.float32)
+        np.testing.assert_array_equal(reloaded(frames).numpy(), model(frames).numpy())
 
 
 class DeepLabCutLegacyTests(BackboneWorkflowMixin, unittest.TestCase):

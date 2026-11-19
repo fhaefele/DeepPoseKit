@@ -39,7 +39,7 @@ def read_config(value, field):
 
 
 def normalize_legacy_graph(config):
-    """Translate old Functional model and node names for Keras 3."""
+    """Translate legacy Functional graph configurations for Keras 3."""
     layers = config["layers"]
     nested_models = {
         layer["name"]
@@ -49,6 +49,11 @@ def normalize_legacy_graph(config):
     for layer in layers:
         layer_name = layer["name"]
         layer_config = layer["config"]
+        if layer["class_name"] == "SeparableConv2D":
+            # Legacy SeparableConv2D also wrote the inherited Conv2D kernel
+            # options. Its actual kernels use the depthwise/pointwise options.
+            for field in ("kernel_initializer", "kernel_regularizer", "kernel_constraint"):
+                layer_config.pop(field, None)
         if layer_name in _DENSENET_STEM_NAMES:
             layer["name"] = layer_config["name"] = _DENSENET_STEM_NAMES[layer_name]
         if layer_name in nested_models:
