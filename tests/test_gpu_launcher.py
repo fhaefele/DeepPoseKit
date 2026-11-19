@@ -5,12 +5,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from _deepposekit_gpu import bundled_cuda_installed, main, prepare_cuda
+from _deepposekit_gpu import bundled_cuda_installed, prepare_cuda
 
 
 @unittest.skipUnless(sys.platform == "linux", "GPU launcher supports Linux and WSL2")
 class GPULauncherTests(unittest.TestCase):
-    def launch_environment(self, xla_flags, argv=None, *, automatic=False):
+    def launch_environment(self, xla_flags, argv=None):
+        if argv is None:
+            argv = ["-P", "-m", "deepposekit", "doctor"]
         with tempfile.TemporaryDirectory() as directory:
             site = Path(directory) / 'Mødel env "quoted"'
             nvidia = site / "nvidia"
@@ -30,24 +32,20 @@ class GPULauncherTests(unittest.TestCase):
                 patch("_deepposekit_gpu.sysconfig.get_path", return_value=str(site)),
                 patch("_deepposekit_gpu.os.execve") as execute,
             ):
-                command = prepare_cuda if automatic else main
-                command(argv)
-                if argv is not None:
-                    self.assertEqual(execute.call_args.args[1], [sys.executable, *argv])
+                prepare_cuda(argv)
+                self.assertEqual(execute.call_args.args[1], [sys.executable, *argv])
                 environment = execute.call_args.args[2]
-                if automatic:
-                    execute.reset_mock()
-                    with patch.dict(os.environ, environment, clear=True):
-                        self.assertTrue(bundled_cuda_installed())
-                        prepare_cuda(argv)
-                    execute.assert_not_called()
+                execute.reset_mock()
+                with patch.dict(os.environ, environment, clear=True):
+                    self.assertTrue(bundled_cuda_installed())
+                    prepare_cuda(argv)
+                execute.assert_not_called()
             return environment, nvidia
 
     def test_automatic_cuda_setup_is_idempotent_and_preserves_device_masks(self):
         environment, _ = self.launch_environment(
             "--xla_gpu_autotune_level=0",
             ["-P", "-m", "deepposekit", "doctor"],
-            automatic=True,
         )
         self.assertEqual(environment["CUDA_VISIBLE_DEVICES"], "-1")
         self.assertEqual(environment["XLA_FLAGS"], "--xla_gpu_autotune_level=0")

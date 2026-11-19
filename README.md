@@ -32,9 +32,7 @@ uv run --locked deepposekit doctor
 
 `doctor` reports the command, DeepPoseKit, Python, TensorFlow, and Keras
 versions, the installed CUDA runtime, and whether TensorFlow can see a GPU.
-Set `CUDA_VISIBLE_DEVICES=-1` to run a command on CPU. Use
-`deepposekit-gpu your_script.py` for a standalone Python script that needs
-the same CUDA environment.
+Set `CUDA_VISIBLE_DEVICES=-1` to run a command on CPU.
 [TensorFlow GPU installation guide](https://www.tensorflow.org/install/pip)
 
 ## Command line
@@ -262,8 +260,7 @@ its encoder locally.
 ## Import a full checkpoint and predict
 
 The example uses `best_model_densenet.h5` and `video.avi` from the public fly
-dataset. Run your script with `uv run --locked python your_script.py` for
-the base install or `uv run --locked --extra gpu deepposekit-gpu your_script.py` on GPU.
+dataset. Run the Python example with `uv run --locked python your_script.py`.
 [Public example files](https://github.com/jgraving/DeepPoseKit-Data/tree/0aa5e3f5e8f9df63c48ba2bf491354472daa3e7e/datasets/fly)
 
 ```python

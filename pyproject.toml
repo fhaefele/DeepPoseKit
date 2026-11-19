@@ -42,7 +42,6 @@ gpu = [
 
 [project.scripts]
 deepposekit = "deepposekit.cli:console_main"
-deepposekit-gpu = "_deepposekit_gpu:main"
 
 [project.urls]
 Homepage = "https://github.com/jgraving/DeepPoseKit"

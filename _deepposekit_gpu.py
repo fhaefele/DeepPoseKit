@@ -51,14 +51,3 @@ def prepare_cuda(argv):
     env = _cuda_environment()
     if env is not None and env != os.environ:
         os.execve(sys.executable, [sys.executable, *argv], env)
-
-
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    env = _cuda_environment()
-    if env is None:
-        raise SystemExit(
-            "CUDA dependencies are missing. Install with the gpu extra on "
-            "x86-64 Linux or WSL2 with an NVIDIA driver."
-        )
-    os.execve(sys.executable, [sys.executable, *argv], env)
