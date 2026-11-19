@@ -19,7 +19,6 @@ Annotation module `deepposekit.annotate`
 ------
 - [ ] Add support for `deepposekit.annotate.Annotator` to edit DeepLabCut formatted data `deepposekit.io.DLCDataGenerator`. Ensure this does not destroy compatibility with DLC.
 - [x] Remove extra step of initializing a skeleton and remove `deepposekit.annotate.Skeleton`, as this is confusing and not all that helpful.
-- [ ] Abstract `deepposekit.annotate.gui.GUI` and `deepposekit.annotate.Annotator` to use new `deepposekit.io.BaseGenerator` with abstracted data IO
 - [ ] Develop submodule `deepposekit.annotate.outliers` with tools for identifying outlier data for adding to data sets
 
 Models modules `deepposekit.models`
