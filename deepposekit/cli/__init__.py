@@ -197,14 +197,24 @@ def make_parser(
     return parser
 
 
-def main(argv=None, *, prog="deepposekit", version=__version__, configure_predict=None):
+def main(
+    argv=None,
+    *,
+    prog="deepposekit",
+    version=__version__,
+    configure_predict=None,
+    cuda_module=None,
+):
     """Run the CLI, optionally extending predict for an embedding command.
 
     configure_predict replaces the generic reader flags. It receives the
     prediction parser and can return a callable that configures the reader
     from parsed arguments before standard prediction validation.
+    cuda_module names the installable module used to restart a CLI executable
+    with its bundled CUDA paths. Explicit argv calls run in the caller's process.
     """
-    argv = sys.argv[1:] if argv is None else list(argv)
+    executable = argv is None
+    argv = sys.argv[1:] if executable else list(argv)
     parser = make_parser(
         color_mode(argv),
         prog=prog,
@@ -249,8 +259,16 @@ def main(argv=None, *, prog="deepposekit", version=__version__, configure_predic
                 "Pass grayscale settings through --custom-reader-args with a custom reader."
             )
     try:
+        if executable and cuda_module is not None:
+            from _deepposekit_gpu import prepare_cuda
+
+            prepare_cuda(["-P", "-m", cuda_module, *argv])
+
         from deepposekit.cli import operations
 
+        if args.command == "doctor":
+            args.command_name = prog
+            args.command_version = version
         operations.run(args)
     except KeyboardInterrupt:
         parser.show_error("Interrupted.")
@@ -259,3 +277,7 @@ def main(argv=None, *, prog="deepposekit", version=__version__, configure_predic
         parser.show_error(error)
         return 1
     return 0
+
+
+def console_main():
+    return main(cuda_module="deepposekit")

@@ -41,7 +41,7 @@ gpu = [
 ]
 
 [project.scripts]
-deepposekit = "deepposekit.cli:main"
+deepposekit = "deepposekit.cli:console_main"
 deepposekit-gpu = "_deepposekit_gpu:main"
 
 [project.urls]

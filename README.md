@@ -21,30 +21,21 @@ uv run --locked python -c "from deepposekit.models import StackedDenseNet"
 
 ### NVIDIA GPU on Linux or WSL2
 
-Use the `gpu` extra on x86-64 Linux or WSL2 with a working NVIDIA driver.
-The `deepposekit-gpu` command runs Python with the CUDA libraries and compiler
-from the locked environment. [TensorFlow GPU installation guide](https://www.tensorflow.org/install/pip)
-
-Save this as `check_gpu.py`.
-
-```python
-import tensorflow as tf
-from deepposekit.models import StackedDenseNet
-
-devices = tf.config.list_physical_devices("GPU")
-assert devices, "No GPU detected"
-print(devices)
-```
+Install the `gpu` extra on x86-64 Linux or WSL2 to add the CUDA libraries and
+compiler. `deepposekit` sets up those paths automatically. TensorFlow uses a
+visible NVIDIA GPU when available and runs on CPU when it sees no GPU.
 
 ```bash
-nvidia-smi
 uv sync --locked --extra gpu
-uv run --locked --extra gpu deepposekit-gpu check_gpu.py
+uv run --locked deepposekit doctor
 ```
 
-Use `uv run --locked --extra gpu deepposekit-gpu your_script.py` for the training
-and prediction examples below. GPU training and legacy subpixel prediction were
-tested on an RTX 4090 in WSL2.
+`doctor` reports the command, DeepPoseKit, Python, TensorFlow, and Keras
+versions, the installed CUDA runtime, and whether TensorFlow can see a GPU.
+Set `CUDA_VISIBLE_DEVICES=-1` to run a command on CPU. Use
+`deepposekit-gpu your_script.py` for a standalone Python script that needs
+the same CUDA environment.
+[TensorFlow GPU installation guide](https://www.tensorflow.org/install/pip)
 
 ## Command line
 
@@ -59,11 +50,11 @@ deepposekit --help
 uvx --python 3.12 --from "$fork" deepposekit --help
 ```
 
-For GPU training or prediction, use the launcher with the `gpu` extra.
+For a GPU tool install, select the extra once and use the same commands.
 
 ```bash
-uv run --locked --extra gpu deepposekit-gpu -m deepposekit train training.toml
-uvx --python 3.12 --from "deepposekit[gpu] @ $fork" deepposekit-gpu -m deepposekit train training.toml
+uv tool install --python 3.12 "deepposekit[gpu] @ $fork"
+deepposekit train training.toml
 ```
 
 ### Prepare, train, and evaluate

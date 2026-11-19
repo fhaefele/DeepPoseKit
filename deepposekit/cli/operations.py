@@ -603,19 +603,33 @@ def evaluate(args):
         print(args.output)
 
 
-def doctor():
+def doctor(args):
+    from importlib.metadata import PackageNotFoundError, version
+
     import keras
     import tensorflow as tf
 
+    from _deepposekit_gpu import bundled_cuda_installed
+    from deepposekit import __version__
+
+    try:
+        cuda_runtime = version("nvidia-cuda-runtime-cu12")
+    except PackageNotFoundError:
+        cuda_runtime = None
+    devices = tf.config.list_physical_devices()
     print(
         json.dumps(
             {
+                "command": args.command_name,
+                "version": args.command_version,
+                "deepposekit": __version__,
                 "python": sys.version.split()[0],
                 "tensorflow": tf.__version__,
                 "keras": keras.__version__,
-                "devices": [
-                    device.name for device in tf.config.list_physical_devices()
-                ],
+                "cuda_wheels_installed": bundled_cuda_installed(),
+                "cuda_runtime": cuda_runtime,
+                "gpu_available": any(device.device_type == "GPU" for device in devices),
+                "devices": [device.name for device in devices],
             },
             indent=2,
         )
@@ -628,7 +642,7 @@ def run(args):
 
         train(args)
     elif args.command == "doctor":
-        doctor()
+        doctor(args)
     else:
         commands = {
             "predict": predict,

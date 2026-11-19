@@ -13,7 +13,7 @@ import h5py
 import numpy as np
 from rich.text import Text
 
-from deepposekit.cli import main
+from deepposekit.cli import console_main, main
 from deepposekit.io import DataGenerator, VideoReader, VideoWriter
 from deepposekit.models import load_model
 
@@ -26,6 +26,28 @@ def invoke(*args):
 
 
 class TerminalTests(unittest.TestCase):
+    def test_executable_prepares_cuda_and_programmatic_calls_stay_in_process(self):
+        with (
+            patch.object(sys, "argv", ["deepposekit", "doctor"]),
+            patch("_deepposekit_gpu.prepare_cuda") as setup,
+            patch("deepposekit.cli.operations.run") as run,
+        ):
+            self.assertEqual(console_main(), 0)
+            setup.assert_called_once_with(["-P", "-m", "deepposekit", "doctor"])
+            self.assertEqual(run.call_args.args[0].command_name, "deepposekit")
+            setup.reset_mock()
+            self.assertEqual(main(["doctor"], cuda_module="deepposekit"), 0)
+            setup.assert_not_called()
+
+    def test_completion_skips_cuda_setup(self):
+        with (
+            patch.object(sys, "argv", ["deepposekit", "completion", "bash"]),
+            patch("_deepposekit_gpu.prepare_cuda") as setup,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(console_main(), 0)
+        setup.assert_not_called()
+
     def test_grouped_help_wraps_and_respects_color(self):
         class Terminal(StringIO):
             def isatty(self):
