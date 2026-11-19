@@ -360,7 +360,11 @@ class _TrainingBackup(keras.callbacks.BackupAndRestore):
         self._written.update(written)
 
     def on_train_end(self, logs=None):
-        # The CLI reservation stays in place through final checkpoint publication.
+        # Keras finishes fitting before the CLI publishes the checkpoint.
+        # Keep the recovery files until publication succeeds.
+        return
+
+    def finalize(self):
         if self.delete_checkpoint:
             for path in self._written:
                 path.unlink(missing_ok=True)
@@ -556,4 +560,7 @@ def train(args):
         if not len(loss) or not np.isfinite(loss).all():
             raise ValueError("Training did not produce a finite loss")
         model.save(output, overwrite=args.overwrite)
+        for callback in fit.get("callbacks", ()):
+            if isinstance(callback, _TrainingBackup):
+                callback.finalize()
     print(output)

@@ -507,6 +507,25 @@ class WorkflowTests(unittest.TestCase):
                 _callback_list(read_training_config(second), None, False, other)
         self.assertFalse(reserved.exists())
 
+    def test_backup_remains_when_final_checkpoint_publication_fails(self):
+        from deepposekit.models.engine import BaseModel
+
+        config = self.path / "recovery.toml"
+        content = self.config.read_text().replace("model.keras", "recovery.keras")
+        config.write_text(
+            content.replace(
+                '"TerminateOnNaN"', '{name="BackupAndRestore", backup_dir="recovery"}'
+            )
+        )
+        with patch.object(
+            BaseModel, "save", side_effect=FileExistsError("concurrent output")
+        ):
+            status, _, errors = invoke("train", config)
+        self.assertEqual(status, 1)
+        self.assertIn("concurrent output", errors)
+        self.assertTrue((self.path / "recovery" / "latest.weights.h5").is_file())
+        self.assertTrue((self.path / "recovery" / "training_metadata.json").is_file())
+
     def test_fine_tune_reuses_normalized_leap_constructor_options(self):
         config = self.path / "leap.toml"
         content = (
