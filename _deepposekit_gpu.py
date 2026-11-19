@@ -6,14 +6,15 @@ import sys
 import sysconfig
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
     nvidia = Path(sysconfig.get_path("purelib")) / "nvidia"
     compiler_bin = nvidia / "cuda_nvcc" / "bin"
     solver_lib = nvidia / "cusolver" / "lib"
     if not solver_lib.is_dir() or not (compiler_bin / "ptxas").is_file():
         raise SystemExit(
-            "CUDA dependencies are missing. Run 'uv sync --locked --extra gpu' "
-            "on x86-64 Linux or WSL2 with an NVIDIA driver."
+            "CUDA dependencies are missing. Install with the gpu extra on "
+            "x86-64 Linux or WSL2 with an NVIDIA driver."
         )
 
     env = os.environ.copy()
@@ -27,4 +28,4 @@ def main():
     env["LD_LIBRARY_PATH"] = os.pathsep.join(library_paths)
     env["PATH"] = os.pathsep.join((str(compiler_bin), env.get("PATH", os.defpath)))
 
-    os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)
+    os.execve(sys.executable, [sys.executable, *argv], env)

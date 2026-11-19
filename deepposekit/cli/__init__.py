@@ -28,11 +28,9 @@ def _count(value):
     return number
 
 
-def make_parser(color="auto"):
+def make_parser(color="auto", *, prog="deepposekit", configure_predict=None):
     parser_type = partial(TerminalParser, color=color)
-    parser = parser_type(
-        prog="deepposekit", description="Train and run pose estimation models."
-    )
+    parser = parser_type(prog=prog, description="Train and run pose estimation models.")
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
@@ -149,23 +147,28 @@ def make_parser(color="auto"):
         action="store_true",
         help="Include subfolders of input directories.",
     )
-    predict.add_argument(
-        "--gray", action="store_true", help="Read grayscale using the built-in reader."
-    )
+    predict.add_argument("--gray", action="store_true", help="Read grayscale frames.")
     batch_option(predict)
     output_options(predict)
-    _path(
-        predict,
-        "--custom-reader",
-        "py",
-        help="Python file with a create_reader factory.",
-    )
-    predict.add_argument(
-        READER_ARGS,
-        nargs=argparse.REMAINDER,
-        metavar="ARG",
-        help="Forward the remaining arguments to the custom reader.",
-    )
+    if configure_predict is None:
+        _path(
+            predict,
+            "--custom-reader",
+            "py",
+            help="Python file with a create_reader factory.",
+        )
+        predict.add_argument(
+            READER_ARGS,
+            nargs=argparse.REMAINDER,
+            metavar="ARG",
+            help="Forward the remaining arguments to the custom reader.",
+        )
+    else:
+        predict.set_defaults(
+            custom_reader=None,
+            custom_reader_args=None,
+            prepare_prediction=configure_predict(predict),
+        )
 
     convert = command(
         "convert", "Model workflow", "Convert a legacy HDF5 checkpoint to .keras."
@@ -194,10 +197,17 @@ def make_parser(color="auto"):
     return parser
 
 
-def main(argv=None):
-    """Parse and dispatch a command, delaying ML imports until execution."""
+def main(argv=None, *, prog="deepposekit", configure_predict=None):
+    """Run the CLI, optionally extending predict for an embedding command.
+
+    configure_predict replaces the generic reader flags. It receives the
+    prediction parser and can return a callable that configures the reader
+    from parsed arguments before standard prediction validation.
+    """
     argv = sys.argv[1:] if argv is None else list(argv)
-    parser = make_parser(color_mode(argv))
+    parser = make_parser(
+        color_mode(argv), prog=prog, configure_predict=configure_predict
+    )
     argcomplete.autocomplete(parser)
     # argparse treats "--" specially even inside a REMAINDER. Parse only the
     # DeepPoseKit prefix so a reader receives all remaining arguments unchanged.
@@ -219,13 +229,16 @@ def main(argv=None):
         parser.print_help()
         return 0
     if args.command == "completion":
-        sys.stdout.write(argcomplete.shellcode(["deepposekit"], shell=args.shell))
+        sys.stdout.write(argcomplete.shellcode([prog], shell=args.shell))
         return 0
     if args.command == "predict":
         if args.output_dir is None and (len(args.paths) != 2 or args.recursive):
             parser.error(
                 "Specify an input and output .npy, or use --output-dir with input paths."
             )
+        prepare_prediction = getattr(args, "prepare_prediction", None)
+        if prepare_prediction is not None:
+            prepare_prediction(args)
         if args.custom_reader_args is not None and args.custom_reader is None:
             parser.error("--custom-reader-args requires --custom-reader")
         if args.gray and args.custom_reader is not None:

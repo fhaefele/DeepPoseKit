@@ -10,7 +10,7 @@ from _deepposekit_gpu import main
 
 @unittest.skipUnless(sys.platform == "linux", "GPU launcher supports Linux and WSL2")
 class GPULauncherTests(unittest.TestCase):
-    def launch_environment(self, xla_flags):
+    def launch_environment(self, xla_flags, argv=None):
         with tempfile.TemporaryDirectory() as directory:
             site = Path(directory) / 'Mødel env "quoted"'
             nvidia = site / "nvidia"
@@ -26,8 +26,13 @@ class GPULauncherTests(unittest.TestCase):
                 patch("_deepposekit_gpu.sysconfig.get_path", return_value=str(site)),
                 patch("_deepposekit_gpu.os.execve") as execute,
             ):
-                main()
+                main(argv)
+            if argv is not None:
+                self.assertEqual(execute.call_args.args[1], [sys.executable, *argv])
             return execute.call_args.args[2], nvidia
+
+    def test_embedded_launcher_accepts_an_argument_vector(self):
+        self.launch_environment(None, ["-m", "downstream", "doctor"])
 
     def test_leaves_xla_flags_to_tensorflow(self):
         flags = (

@@ -210,6 +210,12 @@ mapping of stream names to factories accepting `(path, *, batch_size)`.
 Use `--output-dir` with multiple streams. For example, a stream named
 `Camera1` writes `recording.Camera1.npy`.
 
+A downstream package can provide its own command name and reader options
+through `deepposekit.cli.main(prog=..., configure_predict=...)`.
+The callback supplies reader options on the shared prediction parser and can
+translate them into `custom_reader` and `custom_reader_args`. Help and completion
+use the downstream command name and the same parser.
+
 ### Help, completion, and environment
 
 Run `deepposekit train --help` for command-specific flags and
