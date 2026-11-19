@@ -57,6 +57,10 @@ jobs:
           if-no-files-found: error
       - name: Sync the locked modern environment
         run: uv sync --locked --python 3.12
+      - name: Capture checkpoints with scoped legacy TensorFlow names
+        run: |
+          uv run --locked --script tests/fixtures/capture_legacy_reference.py \
+            --source "$RUNNER_TEMP/dpk-legacy" --output "$DPK_LEGACY_REFERENCE_DIR" --scoped-weights
       - name: Run the CPU suite without network access
         run: |
           variables=HOME,UV_CACHE_DIR,UV_PYTHON_INSTALL_DIR,DPK_LEGACY_REFERENCE_DIR,CUDA_VISIBLE_DEVICES,MPLBACKEND,OMP_NUM_THREADS,TF_ENABLE_ONEDNN_OPTS,TF_NUM_INTEROP_THREADS,TF_NUM_INTRAOP_THREADS

@@ -21,6 +21,7 @@ Run with uv run --locked --script tests/fixtures/capture_legacy_reference.py
 --source /path/to/pinned/legacy/checkout --output /path/to/reference-directory.
 The output directory can contain pre-staged public assets for offline capture.
 The legacy checkout must have the pinned DeepPoseKit source without local edits.
+Add --scoped-weights to capture the repeated-model fixture instead.
 """
 
 import argparse
@@ -110,9 +111,7 @@ def check_source(source):
     )
 
 
-def capture(source, output):
-    from importlib.metadata import version
-
+def _configure_legacy_runtime(source, output):
     os.environ.update(
         CUDA_VISIBLE_DEVICES="-1",
         MPLBACKEND="Agg",
@@ -123,6 +122,66 @@ def capture(source, output):
     )
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(source))
+
+
+def capture_scoped_weights(source, output):
+    """Export the second StackedDenseNet built in a single legacy process."""
+    from functools import partial
+    from unittest.mock import patch
+
+    output.mkdir(parents=True, exist_ok=True)
+    _configure_legacy_runtime(source, output)
+
+    import h5py
+    import numpy as np
+    import pandas as pd
+    import tensorflow as tf
+
+    from deepposekit.io import DataGenerator, TrainingGenerator, initialize_dataset
+    from deepposekit.models import StackedDenseNet
+    from deepposekit.models.layers.imagenet_densenet import DenseNet121
+
+    frames = np.random.RandomState(19).randint(0, 256, (4, 64, 96, 1), dtype=np.uint8)
+    skeleton = pd.DataFrame(
+        {"name": ["left", "right"], "parent": ["", "left"], "swap": ["right", "left"]}
+    )
+    keypoints = np.tile([[[10.0, 12.0], [27.0, 32.0]]], (len(frames), 1, 1))
+    annotation_path = str(output / "scoped-annotations.h5")
+    initialize_dataset(annotation_path, frames, skeleton, keypoints, overwrite=True)
+    with h5py.File(annotation_path, "r+") as annotations:
+        annotations["annotated"][:] = True
+    training = TrainingGenerator(
+        DataGenerator(annotation_path), downsample_factor=3, use_graph=False
+    )
+    options = {
+        "n_stacks": 1,
+        "n_transitions": 4,
+        "growth_rate": 4,
+        "pretrained": True,
+        "subpixel": False,
+    }
+    tf.random.set_seed(19)
+
+    # Keep the ImageNet frontend architecture and build without downloading weights.
+    frontend = partial(DenseNet121, weights=None)
+    with patch("deepposekit.models.layers.densenet.DenseNet121", frontend):
+        StackedDenseNet(training, **options)
+        model = StackedDenseNet(training, **options)
+
+    model.save(str(output / "scoped-full.h5"))
+    model.train_model.save_weights(str(output / "scoped-weights.h5"), save_format="h5")
+    np.savez_compressed(
+        output / "scoped-reference.npz",
+        frames=frames,
+        heatmaps=model.train_model.predict(frames, batch_size=1, verbose=0)[-1],
+        predictions=model.predict(frames, batch_size=1, verbose=0),
+    )
+
+
+def capture(source, output):
+    from importlib.metadata import version
+
+    _configure_legacy_runtime(source, output)
 
     import h5py
     import numpy as np
@@ -232,12 +291,20 @@ def main():
         "--source", type=Path, required=True, help="pinned upstream checkout"
     )
     parser.add_argument(
+        "--scoped-weights",
+        action="store_true",
+        help="capture repeated-build legacy weights",
+    )
+    parser.add_argument(
         "--output", type=Path, required=True, help="reference output directory"
     )
     args = parser.parse_args()
     source = args.source.resolve()
     output = args.output.resolve()
     check_source(source)
+    if args.scoped_weights:
+        capture_scoped_weights(source, output)
+        return
     output.mkdir(parents=True, exist_ok=True)
     manifest = capture(source, output)
     (output / "manifest.json").write_text(

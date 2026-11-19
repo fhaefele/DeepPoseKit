@@ -134,8 +134,8 @@ class LegacyStackedDenseNetTest(unittest.TestCase):
             if writer != cls.manifest[field]:
                 raise ValueError(f"Legacy Keras writer mismatch for {checkpoint}")
 
-    def _assert_parity(self, case, actual):
-        outputs = self.expected
+    def _assert_parity(self, case, actual, expected=None):
+        outputs = self.expected if expected is None else expected
         for name in outputs:
             self.assertEqual(actual[name].shape, outputs[name].shape, name)
         error = actual["predictions"] - outputs["predictions"]
@@ -166,6 +166,62 @@ class LegacyStackedDenseNetTest(unittest.TestCase):
         )
         with np.load(output, allow_pickle=False) as actual:
             self._assert_parity(label, actual)
+
+    def test_second_legacy_model_scopes_in_full_and_weights_only_checkpoints(self):
+        full = self.directory / "scoped-full.h5"
+        weights = self.directory / "scoped-weights.h5"
+        with h5py.File(full, "r") as checkpoint:
+            manifest = {
+                "pose_model": json.loads(checkpoint.attrs["pose_model_config"]),
+                "training_generator": json.loads(
+                    checkpoint.attrs["train_generator_config"]
+                ),
+            }
+        for checkpoint_path in (full, weights):
+            with h5py.File(checkpoint_path, "r") as checkpoint:
+                layers = checkpoint.get("model_weights", checkpoint)
+                self.assertIn(
+                    b"output_0_1/kernel:0", layers["output_0"].attrs["weight_names"]
+                )
+                self.assertIn(
+                    b"conv1/conv_1/kernel:0",
+                    layers["densenet121"].attrs["weight_names"],
+                )
+
+        with np.load(
+            self.directory / "scoped-reference.npz", allow_pickle=False
+        ) as data:
+            frames = data["frames"]
+            expected = {name: data[name] for name in ("heatmaps", "predictions")}
+        model = load_model(full, compile=False)
+        self._assert_parity("scoped-full", _predict(model, frames), expected)
+        model = self._configured_model("scoped-annotations.h5", manifest)
+        load_legacy_weights(model, weights)
+        self._assert_parity("scoped-weights-only", _predict(model, frames), expected)
+
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            original = b"output_0_1/bias:0"
+            for problem in ("identity", "duplicate"):
+                with self.subTest(problem=problem):
+                    invalid = directory / f"{problem}.h5"
+                    shutil.copyfile(weights, invalid)
+                    with h5py.File(invalid, "r+") as checkpoint:
+                        layer = checkpoint["output_0"]
+                        names = list(layer.attrs["weight_names"])
+                        if problem == "identity":
+                            layer.create_group("output_1_1")
+                            wrong = b"output_1_1/bias:0"
+                            layer.move(original, wrong)
+                            names[names.index(original)] = wrong
+                        else:
+                            layer.create_group("output_0")
+                            duplicate = b"output_0/bias:0"
+                            layer[duplicate] = layer[original]
+                            names.append(duplicate)
+                        layer.attrs["weight_names"] = names
+                    with self.assertRaisesRegex(ValueError, "identit"):
+                        load_legacy_weights(model, invalid)
 
     def test_full_checkpoint_is_portable(self):
         original_annotations = self.manifest["training_generator"]["config"]["datapath"]
@@ -284,12 +340,15 @@ class LegacyStackedDenseNetTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "downsample_factor"):
                 load_model(checkpoint, compile=False)
 
-    def _configured_model(self):
+    def _configured_model(
+        self, annotation_file="annotation_data_release.h5", manifest=None
+    ):
         # Exercise normal construction after the Keras global name counters advance.
         keras.layers.Conv2D(1, 1)
         keras.layers.BatchNormalization()
-        annotations = DataGenerator(str(self.directory / "annotation_data_release.h5"))
-        generator_settings = self.manifest["training_generator"]["config"]
+        annotations = DataGenerator(str(self.directory / annotation_file))
+        manifest = self.manifest if manifest is None else manifest
+        generator_settings = manifest["training_generator"]["config"]
         generator = TrainingGenerator(
             annotations,
             downsample_factor=generator_settings["downsample_factor"],
@@ -297,7 +356,7 @@ class LegacyStackedDenseNetTest(unittest.TestCase):
             sigma=generator_settings["sigma"],
             validation_split=generator_settings["validation_split"],
         )
-        config = self.manifest["pose_model"]["config"]
+        config = manifest["pose_model"]["config"]
         keys = (
             "n_stacks",
             "n_transitions",
