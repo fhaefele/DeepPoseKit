@@ -1,93 +1,67 @@
 <p align="center">
-<img src="https://github.com/jgraving/DeepPoseKit/blob/master/assets/deepposekit_logo.png" height="320px">
+<img src="assets/deepposekit_logo.png" alt="DeepPoseKit logo" height="240">
 </p>
 
-# You have just found DeepPoseKit.
-<p align="center">
-<img src="https://github.com/jgraving/jgraving.github.io/blob/master/files/images/Figure1video1.gif" height="128px">
-</p>
+# DeepPoseKit
 
-DeepPoseKit is a software toolkit with a high-level API for 2D pose estimation of user-defined keypoints using deep learning—written in Python and built using [Tensorflow](https://github.com/tensorflow/tensorflow) and [Keras](https://www.tensorflow.org/guide/keras). Use DeepPoseKit if you need:
+DeepPoseKit trains models for 2D pose estimation of user-defined keypoints and
+runs them on images or video. This fork uses Python 3.12, TensorFlow 2.21,
+Keras 3, and a locked uv environment. [Original DeepPoseKit paper](https://doi.org/10.7554/eLife.47994)
 
-- tools for annotating images or video frames with user-defined keypoints
-- a straightforward but flexible data augmentation pipeline using the [imgaug package](https://github.com/aleju/imgaug)
-- a Keras-based interface for initializing, training, and evaluating pose estimation models
-- easy-to-use methods for saving and loading models and making predictions on new data
-
-DeepPoseKit is designed with a focus on *usability* and *extensibility*, as being able to go from idea to result with the least possible delay is key to doing good research.
-
-DeepPoseKit is currently limited to *individual pose estimation*. If individuals can be easily distinguished visually (i.e., they have differently colored bodies or are marked in some way), then multiple individuals can simply be labeled with separate keypoints (head1, tail1, head2, tail2, etc.). Otherwise DeepPoseKit can be extended to multiple individuals by first localizing, tracking, and cropping individuals with additional software such as [idtracker.ai](https://idtracker.ai/), [pinpoint](https://github.com/jgraving/pinpoint), or [Tracktor](https://github.com/vivekhsridhar/tracktor).
-
-Localization (without tracking) can also be achieved with deep learning software like [keras-retinanet](https://github.com/fizyr/keras-retinanet), the [Tensorflow Object Detection API](https://github.com/tensorflow/models/tree/master/research/object_detection), or [MatterPort's Mask R-CNN](https://github.com/matterport/Mask_RCNN).
-
-[Check out our paper](https://doi.org/10.7554/eLife.47994) to find out more.
-
-<p align="center">
-<img src="https://github.com/jgraving/jgraving.github.io/blob/master/files/images/zebra.gif" height="256px">
-<img src="https://github.com/jgraving/jgraving.github.io/blob/master/files/images/locust.gif" height="256px">
-</p>
-
-# How to use DeepPoseKit
-
-DeepPoseKit is designed for easy use. For example, training and saving a model requires only a few lines of code:
-```python
-from deepposekit.io import DataGenerator, TrainingGenerator
-from deepposekit.models import StackedDenseNet
-
-data_generator = DataGenerator('/path/to/annotation_data.h5')
-train_generator = TrainingGenerator(data_generator)
-model = StackedDenseNet(train_generator)
-model.fit(batch_size=16, n_workers=8)
-model.save('/path/to/saved_model.h5')
-```
-Loading a trained model and running predictions on new data is also straightforward. For example, running predictions on a new video:
-```python
-from deepposekit.models import load_model
-from deepposekit.io import VideoReader
-
-model = load_model('/path/to/saved_model.h5')
-reader = VideoReader('/path/to/video.mp4')
-predictions = model.predict(reader)
-```
-
-## Using DeepPoseKit is a 4-step process:
-
-- **1.** [Create an annotation set](https://github.com/jgraving/DeepPoseKit/blob/master/examples/step1_create_annotation_set.ipynb) <a href="https://colab.research.google.com/github/jgraving/deepposekit/blob/master/examples/step1_create_annotation_set.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
-- **2.** Label the annotation HDF5 file with an external annotation tool.
-- **3.** [Select and train](https://github.com/jgraving/DeepPoseKit/blob/master/examples/step3_train_model.ipynb) one our [pose estimation models](http://jakegraving.com/DeepPoseKit/html/deepposekit/models/index.html) including [`StackedDenseNet`](http://jakegraving.com/DeepPoseKit/html/deepposekit/models/StackedDenseNet.html), [`StackedHourglass`](http://jakegraving.com/DeepPoseKit/html/deepposekit/models/StackedHourglass.html), [`DeepLabCut`](http://jakegraving.com/DeepPoseKit/html/deepposekit/models/DeepLabCut.html), and [`LEAP`](http://jakegraving.com/DeepPoseKit/html/deepposekit/models/LEAP.html). <a href="https://colab.research.google.com/github/jgraving/deepposekit/blob/master/examples/step3_train_model.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
-- **4.** Use the trained model to:
-	- a) [Initialize keypoints for unannotated data](https://github.com/jgraving/DeepPoseKit/blob/master/examples/step4a_initialize_annotations.ipynb) for faster annotations with *active learning*. <a href="https://colab.research.google.com/github/jgraving/deepposekit/blob/master/examples/step4a_initialize_annotations.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
-	- b) [Predict on new data and refine the training set](https://github.com/jgraving/DeepPoseKit/blob/master/examples/step4b_predict_new_data.ipynb) to improve performance. <a href="https://colab.research.google.com/github/jgraving/deepposekit/blob/master/examples/step4b_predict_new_data.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
-
-## For more details:
-
-- See [our example notebooks](https://github.com/jgraving/deepposekit/blob/master/examples/)
-- Check the [documentation](http://docs.deepposekit.org)
-- Read [our paper](https://doi.org/10.7554/eLife.47994)
-
-## "I already have annotated data"
-
-DeepPoseKit is designed to be extensible, so loading data in other formats is possible.
-
-If you have annotated data from DeepLabCut (http://deeplabcut.org), try [our (experimental) example notebook ](https://github.com/jgraving/DeepPoseKit/blob/master/examples/deeplabcut_data_example.ipynb) for loading data in this format. <a href="https://colab.research.google.com/github/jgraving/deepposekit/blob/master/examples/deeplabcut_data_example.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
-
-Have data in another format? You can write your own custom generator to load it.
-Check out the [example for writing custom data generators](https://github.com/jgraving/DeepPoseKit/blob/master/examples/custom_data_generator.ipynb). <a href="https://colab.research.google.com/github/jgraving/deepposekit/blob/master/examples/custom_data_generator.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
-
-# Installation
-
-This fork uses Python 3.12, TensorFlow 2.21, and Keras 3. From a checkout of this repository, install the locked environment and check that the import works.
+## Installation
 
 ```bash
+git clone https://github.com/fhaefele/DeepPoseKit.git
+cd DeepPoseKit
 uv sync --locked
 uv run --locked python -c "from deepposekit.models import StackedDenseNet"
 ```
 
-The migration covers `StackedDenseNet`. The [upstream fly example data](https://github.com/jgraving/DeepPoseKit-Data/tree/0aa5e3f5e8f9df63c48ba2bf491354472daa3e7e/datasets/fly) contains the public checkpoint, video, and annotations used below. The examples assume those files are in the current directory. Run your Python script with `uv run --locked python your_script.py`.
+On a supported NVIDIA host with its driver installed, uv can install TensorFlow’s
+CUDA dependencies for a run. GPU execution has not been verified for this fork.
+[TensorFlow GPU install guide](https://www.tensorflow.org/install/pip)
 
-## Import a full StackedDenseNet checkpoint
+```bash
+uv run --locked --with 'tensorflow[and-cuda]==2.21.0' \
+  python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+```
 
-Use `load_model` for an upstream DeepPoseKit `.h5` or `.hdf5` checkpoint. The checkpoint supplies the model and inference settings.
+## Train from HDF5 annotations
+
+Use `deepposekit.io.initialize_dataset` to prepare images and a keypoint
+skeleton, then label the annotation HDF5 with an external annotation tool.
+The package provides headless HDF5 readers, frame sampling, and keypoint
+augmentation.
+Leave the `parent` cell empty for each root keypoint in the skeleton CSV.
+
+```python
+from deepposekit.io import DataGenerator, TrainingGenerator
+from deepposekit.models import StackedDenseNet
+
+data = DataGenerator("annotations.h5")
+training = TrainingGenerator(data, downsample_factor=2)
+model = StackedDenseNet(training)
+model.compile(optimizer="adam", loss="mse")
+model.fit(batch_size=2, epochs=1)
+model.save("model.keras")
+```
+
+| Model | Training generator downsample factor |
+| --- | --- |
+| `StackedDenseNet` | 2 or higher, with more transitions than downsampling steps |
+| `StackedHourglass` | More model transitions than downsampling steps |
+| `LEAP` | 0, with image height and width divisible by 4 |
+| `DeepLabCut` | 2, 3, or 4 |
+
+`DeepLabCut` is the original DeepPoseKit implementation. Its encoders include
+ResNet, DenseNet, MobileNetV2, and Xception. Use `weights=None` to initialize
+its encoder locally.
+
+## Import a full checkpoint and predict
+
+The example uses `best_model_densenet.h5` and `video.avi` from the public fly
+dataset. Run the script with `uv run --locked python your_script.py`.
+[Public example files](https://github.com/jgraving/DeepPoseKit-Data/tree/0aa5e3f5e8f9df63c48ba2bf491354472daa3e7e/datasets/fly)
 
 ```python
 from deepposekit.io import VideoReader
@@ -105,11 +79,20 @@ model.save("fly.keras")
 restored = load_model("fly.keras", compile=False)
 ```
 
-For fine-tuning, load with `generator=DataGenerator("annotation_data_release.h5")` from `deepposekit.io`, then call `model.compile(optimizer="adam", loss="mse")` and `model.fit(batch_size=1)`. Use annotations with the checkpoint’s original keypoint order and skeleton. Legacy imports start with fresh optimizer state.
+A full DeepPoseKit `.h5` or `.hdf5` checkpoint stores model geometry and decoder
+settings. The CPU suite compares imports and `.keras` reloads against pinned
+legacy references for all four models.
 
-## Import a legacy weights-only file
+For fine-tuning, pass a compatible annotation `DataGenerator` as
+`generator=` when loading the model, then compile it with a fresh optimizer.
+Match the checkpoint’s keypoint order, skeleton, image shape, and preprocessing.
 
-Construct a matching model before loading a legacy Keras HDF5 export made with `save_weights`. Supply the original architecture, annotated image shape, keypoint order and skeleton, and decoder settings. `pretrained_weights=None` uses the original ImageNet-based architecture and initializes it locally before the import. This example matches a weights-only export of the public fly checkpoint.
+## Import legacy StackedDenseNet weights
+
+For a legacy Keras `save_weights` HDF5 export, construct the matching
+`StackedDenseNet` first. The following options match the public fly model.
+`pretrained_weights=None` builds its ImageNet-based encoder locally before
+the imported weights are assigned.
 
 ```python
 from deepposekit.io import DataGenerator, TrainingGenerator
@@ -132,25 +115,19 @@ load_legacy_weights(model, "legacy.weights-only.h5")
 model.save("fly-from-weights.keras")
 ```
 
-The verification suite covers the published full checkpoint written by Keras `2.2.4-tf` and a weights-only HDF5 export of the same model written by Keras `2.3.0-tf`. The [legacy reference runner](tests/fixtures/capture_legacy_reference.py) recreates the weights-only file and captures the reference outputs.
+The fixture runner recreates the weights-only example and records the legacy
+outputs for comparison. [Legacy reference runner](tests/fixtures/capture_legacy_reference.py)
 
-# Contributors and Development  
-   
-DeepPoseKit was developed by [Jake Graving](https://github.com/jgraving) and [Daniel Chae](https://github.com/dchaebae), and is still being actively developed. .
+## Development and issues
 
-We welcome community involvement and public contributions to the toolkit. If you wish to contribute, please [fork the repository](https://help.github.com/en/articles/fork-a-repo) to make your modifications and [submit a pull request](https://help.github.com/en/articles/creating-a-pull-request-from-a-fork).
+Open an issue with your model class, checkpoint format, environment, and a
+minimal example. [Fork issue tracker](https://github.com/fhaefele/DeepPoseKit/issues)
 
-If you'd like to get involved with developing DeepPoseKit, get in touch (jgraving@gmail.com) and check out [our development roadmap](https://github.com/jgraving/DeepPoseKit/blob/master/DEVELOPMENT.md) to see future plans for the package.  
+DeepPoseKit was developed by Jake Graving and Daniel Chae. [Upstream repository](https://github.com/jgraving/DeepPoseKit)
 
-# Issues  
- 
-Please submit bugs or feature requests to the [GitHub issue tracker](https://github.com/jgraving/deepposekit/issues/new). Please limit reported issues to the DeepPoseKit codebase and provide as much detail as you can with a minimal working example if possible.
+## License
 
-If you experience problems with [Tensorflow](https://github.com/tensorflow/tensorflow), such as installing CUDA or cuDNN dependencies, then please direct issues to those development teams.
-
-# License
-
-Released under a Apache 2.0 License. See [LICENSE](https://github.com/jgraving/deepposekit/blob/master/LICENSE) for details.
+Apache 2.0. [License](LICENSE)
 
 # References
 
