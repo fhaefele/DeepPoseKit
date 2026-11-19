@@ -68,9 +68,28 @@ def _read_metadata(values):
     return {field: read_config(values.get(field), field) for field in METADATA_FIELDS}
 
 
+def _legacy_checkpoint_layout(checkpoint):
+    if "model_weights" in checkpoint or any(
+        field in checkpoint.attrs for field in ("model_config", *METADATA_FIELDS)
+    ):
+        if "model_config" not in checkpoint.attrs:
+            raise ValueError("Missing model_config in full HDF5 checkpoint")
+        if not isinstance(checkpoint.get("model_weights"), h5py.Group):
+            raise ValueError(
+                "Missing or invalid model_weights group in full HDF5 checkpoint"
+            )
+        return "full"
+    if any(name in checkpoint.attrs for name in ("layer_names", "layer_names0")):
+        return "weights-only"
+    raise ValueError(
+        "Unsupported HDF5 checkpoint layout. Expected a DeepPoseKit checkpoint "
+        "or a legacy Keras weights file with root layer_names."
+    )
+
+
 def _load_legacy(path, custom_objects, compile_model):
     with h5py.File(path, "r") as checkpoint:
-        if "model_config" not in checkpoint.attrs or "model_weights" not in checkpoint:
+        if _legacy_checkpoint_layout(checkpoint) == "weights-only":
             raise ValueError(
                 "Expected a full DeepPoseKit checkpoint. For weights-only HDF5 use "
                 "load_legacy_weights with a matching StackedDenseNet model."
@@ -140,13 +159,15 @@ def _geometry(config):
             or len(output) != 2
             or len(keypoints) != 2
             or not all(
-                isinstance(size, Integral) and size > 0
+                isinstance(size, Integral) and not isinstance(size, bool) and size > 0
                 for size in (*image, *output, *keypoints, channels)
             )
             or keypoints[1] != 2
             or keypoints[0] > channels
             or not isinstance(downsample, Integral)
+            or isinstance(downsample, bool)
             or downsample < 0
+            or isinstance(sigma, bool)
             or not isfinite(sigma)
             or sigma <= 0
         ):
@@ -155,6 +176,11 @@ def _geometry(config):
         raise ValueError(
             "Missing or invalid DeepPoseKit model geometry in checkpoint"
         ) from error
+    if tuple(size >> downsample for size in image[:2]) != output:
+        raise ValueError(
+            f"DeepPoseKit downsample_factor {downsample} is inconsistent with "
+            f"image shape {image[:2]} and heatmap shape {output}"
+        )
     return geometry
 
 
@@ -164,6 +190,10 @@ def _restore_model(train_model, metadata, generator, augmenter):
     name = pose["class_name"]
     if name not in _MODELS:
         raise ValueError(f"Unsupported DeepPoseKit model type {name!r}")
+    if not isinstance(config.get("subpixel"), bool):
+        raise ValueError(
+            "DeepPoseKit pose_model_config requires a boolean subpixel setting"
+        )
     model_type = getattr(import_module(f"deepposekit.models.{name}"), name)
     geometry = _geometry(config)
     saved_generator = metadata["train_generator_config"]["config"]
@@ -243,7 +273,7 @@ def load_legacy_weights(model, path):
             "Pass an initialized StackedDenseNet matching the legacy weights"
         )
     with h5py.File(path, "r") as checkpoint:
-        if "model_config" in checkpoint.attrs or "model_weights" in checkpoint:
+        if _legacy_checkpoint_layout(checkpoint) == "full":
             raise ValueError("Use load_model for full DeepPoseKit checkpoints")
-        assign_legacy_weights(model.train_model, checkpoint, relative_layer_names=True)
+        assign_legacy_weights(model.train_model, checkpoint, existing_model=True)
     return model
