@@ -25,17 +25,21 @@ Use the `gpu` extra on x86-64 Linux or WSL2 with a working NVIDIA driver.
 The `deepposekit-gpu` command runs Python with the CUDA libraries and compiler
 from the locked environment. [TensorFlow GPU installation guide](https://www.tensorflow.org/install/pip)
 
-```bash
-nvidia-smi
-uv sync --locked --extra gpu
-uv run --locked --extra gpu deepposekit-gpu - <<'PYTHON'
+Save this as `check_gpu.py`.
+
+```python
 import tensorflow as tf
 from deepposekit.models import StackedDenseNet
 
 devices = tf.config.list_physical_devices("GPU")
 assert devices, "No GPU detected"
 print(devices)
-PYTHON
+```
+
+```bash
+nvidia-smi
+uv sync --locked --extra gpu
+uv run --locked --extra gpu deepposekit-gpu check_gpu.py
 ```
 
 Use `uv run --locked --extra gpu deepposekit-gpu your_script.py` for the training
