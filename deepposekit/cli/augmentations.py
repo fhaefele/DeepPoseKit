@@ -1,0 +1,222 @@
+"""Discover and preview the same imgaug pipelines used by training."""
+
+from inspect import signature
+import json
+from pathlib import Path
+import tomllib
+
+import imgaug.augmenters as iaa
+import numpy as np
+
+from deepposekit.cli.components import builtin_class, named_list
+
+
+_EXAMPLES = {
+    "Affine": {"rotate": 5},
+    "FlipAxis": {"axis": 1, "p": 0.5},
+    "GaussianBlur": {"sigma": 0.5},
+    "Fliplr": {"p": 0.5},
+    "Flipud": {"p": 0.5},
+    "Resize": {"size": 1.0},
+    "Add": {"value": 10},
+    "Multiply": {"mul": 1.1},
+}
+
+
+def _augmenter(data, name, options):
+    options = dict(options)
+    for key in ("children", "then_list", "else_list"):
+        if key in options:
+            options[key] = [
+                _augmenter(data, *spec)
+                for spec in named_list(options[key], "augmenter")
+            ]
+    if name == "FlipAxis":
+        from deepposekit.augment import FlipAxis
+
+        return FlipAxis(data, **options)
+    return builtin_class(iaa, name, iaa.Augmenter)(**options)
+
+
+def build_augmenters(data, specifications):
+    return [
+        _augmenter(data, *spec)
+        for spec in named_list(specifications, "[generator].augmenter")
+    ]
+
+
+def _list():
+    names = {"FlipAxis"}
+    for name, value in vars(iaa).items():
+        if (
+            not name.startswith("_")
+            and isinstance(value, type)
+            and issubclass(value, iaa.Augmenter)
+            and value is not iaa.Augmenter
+        ):
+            names.add(name)
+    print(*sorted(names), sep="\n")
+
+
+def _example_options(name):
+    if name == "FlipAxis":
+        return _EXAMPLES[name]
+    constructor = builtin_class(iaa, name, iaa.Augmenter)
+    options = _EXAMPLES.get(name, {})
+    try:
+        signature(constructor).bind(**options)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{name} needs additional parameters. See the imgaug documentation for its options."
+        ) from error
+    return options
+
+
+def _toml(names):
+    examples = []
+    for name in names:
+        options = {"name": name, **_example_options(name)}
+        examples.append(
+            ", ".join(
+                f"{key} = {json.dumps(value, ensure_ascii=False)}"
+                for key, value in options.items()
+            )
+        )
+    print("[generator]")
+    print("augmenter = [")
+    for example in examples:
+        print(f"  {{ {example} }},")
+    print("]")
+
+
+def _inputs(args):
+    data = {}
+    generator = {}
+    if args.config is not None:
+        with args.config.open("rb") as file:
+            config = tomllib.load(file)
+        data = config.get("data", {})
+        generator = config.get("generator", {})
+        if not isinstance(data, dict) or not isinstance(generator, dict):
+            raise ValueError("Expected TOML tables for [data] and [generator]")
+        unknown = set(data) - {"annotations", "dataset", "mode"}
+        if unknown:
+            raise ValueError(f"Unknown [data] option(s): {', '.join(sorted(unknown))}")
+    annotations = args.annotations
+    if annotations is None and "annotations" in data:
+        raw_path = data["annotations"]
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ValueError("[data].annotations must be a nonempty path")
+        annotations = args.config.resolve().parent / Path(raw_path).expanduser()
+    if annotations is None:
+        raise ValueError("Provide --annotations or [data].annotations in --config")
+    specifications = (
+        [tomllib.loads(f"augmenter = {entry}")["augmenter"] for entry in args.augment]
+        if args.augment is not None
+        else generator.get("augmenter")
+    )
+    if not isinstance(specifications, list) or not specifications:
+        raise ValueError("Provide --augment or [generator].augmenter in --config")
+    if args.augment is not None and not all(
+        isinstance(spec, dict) for spec in specifications
+    ):
+        raise ValueError("Each --augment must be a TOML inline table containing 'name'")
+    dataset = data.get("dataset", "images")
+    mode = data.get("mode", "annotated")
+    if not isinstance(dataset, str) or not dataset:
+        raise ValueError("[data].dataset must be a nonempty string")
+    if mode not in ("full", "annotated", "unannotated"):
+        raise ValueError("[data].mode must be full, annotated, or unannotated")
+    return annotations, dataset, mode, specifications
+
+
+def _variants(pipeline, image, points, samples):
+    yield "Original", image[0], points[0]
+    for index in range(1, samples + 1):
+        augmented, keypoints = pipeline(images=image.copy(), keypoints=points.copy())
+        yield f"Sample {index}", augmented[0], keypoints[0]
+
+
+def _draw_panel(axis, image, points, edges, title):
+    height, width = image.shape[:2]
+    if image.shape[-1] == 1:
+        axis.imshow(image[..., 0], cmap="gray", vmin=0, vmax=255)
+    else:
+        axis.imshow(image)
+    valid = np.all(
+        np.isfinite(points) & (points >= 0) & (points < (width, height)), axis=1
+    )
+    for first, second in edges:
+        if valid[first] and valid[second]:
+            axis.plot(*points[[first, second]].T, color="#f0c054", linewidth=1.2)
+    axis.scatter(*points[valid].T, c="#62ff84", s=14)
+    axis.set_title(title)
+    axis.set_axis_off()
+
+
+def _preview(args):
+    from matplotlib import pyplot as plt
+
+    from deepposekit.cli.operations import annotation_summary, output_file
+    from deepposekit.cli.render import display_or_save, require_display, skeleton_edges
+    from deepposekit.io import DataGenerator
+
+    annotations, dataset, mode, specifications = _inputs(args)
+    summary = annotation_summary(annotations, dataset)
+    data = DataGenerator(str(annotations), dataset=dataset, mode="full")
+    eligible = {
+        "annotated": data.annotated_index,
+        "unannotated": data.unannotated_index,
+        "full": data.index,
+    }[mode]
+    if args.frame is None:
+        if not len(eligible):
+            raise ValueError(f"The annotation dataset has no frames in {mode} mode")
+        frame = int(eligible[0])
+    else:
+        frame = args.frame
+        if not 0 <= frame < summary["frames"] or frame not in eligible:
+            raise ValueError(f"Frame {frame} is unavailable in {mode} mode")
+    pipeline = iaa.Sequential(build_augmenters(data, specifications))
+    if args.seed is not None:
+        pipeline.seed_(args.seed)
+    output = None
+    if args.output is not None:
+        sources = (annotations,) if args.config is None else (annotations, args.config)
+        output = output_file(args.output, ".png", args.overwrite, *sources)
+    else:
+        require_display()
+    image = data.get_images([frame])
+    points = data.get_keypoints([frame]).astype(float)
+    points[np.any(points < 0, axis=-1)] = np.nan
+    edges = skeleton_edges(data.graph)
+    columns = min(4, args.samples + 1)
+    rows = (args.samples + columns) // columns
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(3 * columns, 3 * rows),
+        squeeze=False,
+        layout="constrained",
+    )
+    try:
+        for axis, (title, panel, coordinates) in zip(
+            axes.flat, _variants(pipeline, image, points, args.samples), strict=False
+        ):
+            _draw_panel(axis, panel, coordinates, edges, title)
+        for axis in list(axes.flat)[args.samples + 1 :]:
+            axis.set_axis_off()
+        figure.suptitle(f"Frame {frame}")
+        display_or_save(figure, output, args.overwrite)
+    finally:
+        plt.close(figure)
+
+
+def run(args):
+    match args.imgaug_command:
+        case "list":
+            _list()
+        case "toml":
+            _toml(args.names)
+        case "preview":
+            _preview(args)

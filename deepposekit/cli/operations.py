@@ -15,8 +15,7 @@ from uuid import uuid4
 import h5py
 import numpy as np
 
-from deepposekit.io import DataGenerator, VideoReader, initialize_dataset
-from deepposekit.io.utils import initialize_skeleton
+from deepposekit.io import DataGenerator, VideoReader
 from deepposekit.models import load_model, load_legacy_weights
 from deepposekit.models.loading import read_checkpoint_metadata
 from deepposekit.utils.keypoints import graph_to_edges, keypoint_errors
@@ -194,6 +193,37 @@ def prediction_reader(args, path, opener):
         if batches is not reader and callable(close_batches):
             cleanup.callback(close_batches)
         yield batches
+
+
+def _validated_batches(batches, size):
+    shape = None
+    for number, batch in enumerate(batches, 1):
+        if (
+            not isinstance(batch, np.ndarray)
+            or batch.ndim != 4
+            or not 1 <= len(batch) <= size
+            or min(batch.shape[1:]) < 1
+            or batch.dtype.kind not in "uif"
+        ):
+            raise ValueError(
+                f"Reader batch {number} must contain up to {size} numeric images"
+            )
+        if shape is not None and batch.shape[1:] != shape:
+            raise ValueError(f"Reader batch {number} changed the frame shape")
+        shape = batch.shape[1:]
+        yield batch
+
+
+@contextmanager
+def frame_batches(args, source):
+    """Use the prediction reader contract to consume one recording stream."""
+    source = input_file(source)
+    with custom_reader_module(args.custom_reader) as module:
+        streams = _prediction_streams(module, args.custom_reader_args or [])
+        if len(streams) != 1:
+            raise ValueError("Select exactly one recording stream for this command")
+        with prediction_reader(args, source, next(iter(streams.values()))) as batches:
+            yield _validated_batches(batches, args.batch_size)
 
 
 VIDEO_EXTENSIONS = frozenset(
@@ -448,47 +478,6 @@ def convert(args):
     print(output)
 
 
-def dataset_init(args):
-    output = output_file(args.output, ".h5", args.overwrite, args.video, args.skeleton)
-    skeleton = initialize_skeleton(str(input_file(args.skeleton)))
-    if (
-        skeleton.empty
-        or skeleton["name"].isna().any()
-        or not skeleton["name"].is_unique
-    ):
-        raise ValueError("Skeleton names must be present and unique")
-    for key in ("parent", "swap"):
-        unknown = set(skeleton[key].dropna()) - set(skeleton["name"])
-        if unknown:
-            raise ValueError(
-                f"Unknown skeleton {key} name(s): {', '.join(map(str, sorted(unknown, key=str)))}"
-            )
-    graph_to_edges(skeleton["tree"].to_numpy())
-    with atomic_output(output, args.overwrite) as temporary:
-        with open_video(args.video, 8, args.gray) as reader:
-            index = 0
-            with ExitStack() as cleanup:
-                file = None
-                for batch in reader.iter_batches():
-                    samples = batch[(-index) % args.frame_step :: args.frame_step]
-                    index += len(batch)
-                    if not len(samples):
-                        continue
-                    if file is None:
-                        initialize_dataset(str(temporary), samples, skeleton)
-                        file = cleanup.enter_context(h5py.File(temporary, "r+"))
-                        continue
-                    start = len(file["images"])
-                    end = start + len(samples)
-                    for key in ("images", "annotations", "annotated"):
-                        file[key].resize(end, axis=0)
-                    file["images"][start:end] = samples
-                    file["annotations"][start:end] = -1
-                if file is None:
-                    raise ValueError("The video contains no readable frames")
-    print(output)
-
-
 def inspect_input(args):
     path = input_file(args.input)
     kind = "checkpoint"
@@ -516,6 +505,16 @@ def inspect_input(args):
     print(json.dumps(result, indent=2, allow_nan=False))
 
 
+def check_checkpoint_skeleton(model, data, *, label="Annotations"):
+    stored = model._checkpoint_metadata["train_generator_config"]["config"]
+    for name, actual in (
+        ("skeleton", np.column_stack((data.graph, data.swap_index)).tolist()),
+        ("skeleton_names", data.skeleton_names),
+    ):
+        if name in stored and stored[name] != actual:
+            raise ValueError(f"{label} {name} does not match the checkpoint")
+
+
 def evaluate(args):
     if args.output is not None:
         output_file(
@@ -524,13 +523,7 @@ def evaluate(args):
     annotation_summary(args.annotations, args.dataset)
     data = DataGenerator(str(args.annotations), dataset=args.dataset)
     model = load_model(args.checkpoint, compile=False)
-    stored = model._checkpoint_metadata["train_generator_config"]["config"]
-    for name, actual in (
-        ("skeleton", np.column_stack((data.graph, data.swap_index)).tolist()),
-        ("skeleton_names", data.skeleton_names),
-    ):
-        if name in stored and stored[name] != actual:
-            raise ValueError(f"Holdout {name} does not match the checkpoint")
+    check_checkpoint_skeleton(model, data, label="Holdout")
     errors = []
     for start in range(0, len(data), args.batch_size):
         indices = range(start, min(start + args.batch_size, len(data)))
@@ -608,11 +601,22 @@ def run(args):
         train(args)
     elif args.command == "doctor":
         doctor(args)
+    elif args.command == "dataset":
+        from deepposekit.cli import annotation_tools
+
+        {
+            "init": annotation_tools.dataset_init,
+            "append": annotation_tools.append,
+            "prelabel": annotation_tools.prelabel,
+        }[args.dataset_command](args)
+    elif args.command == "predictions":
+        from deepposekit.cli import prediction_tools
+
+        prediction_tools.run(args)
     else:
         commands = {
             "predict": predict,
             "convert": convert,
-            "dataset": dataset_init,
             "inspect": inspect_input,
             "evaluate": evaluate,
         }
