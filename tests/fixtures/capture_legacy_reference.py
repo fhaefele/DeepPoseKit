@@ -234,11 +234,20 @@ def main():
     parser.add_argument(
         "--output", type=Path, required=True, help="reference output directory"
     )
+    parser.add_argument(
+        "--backbones", nargs="+", metavar="MODEL",
+        help="capture small trained backbone fixtures instead of the public fly model",
+    )
     args = parser.parse_args()
     source = args.source.resolve()
     output = args.output.resolve()
     check_source(source)
     output.mkdir(parents=True, exist_ok=True)
+    if args.backbones:
+        from backbone_reference import capture_backbones
+
+        capture_backbones(source, output, args.backbones, SOURCE_REVISION)
+        return
     manifest = capture(source, output)
     (output / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
