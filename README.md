@@ -173,8 +173,8 @@ deepposekit predict model.keras recording.h5 predictions.npy \
   --custom-reader-args --camera Camera1 --gray --uint8
 ```
 
-DeepPoseKit loads the selected local Python file and calls
-`create_reader(path, *, batch_size, argv)`. The factory gets a `Path`, the
+A custom reader module defines `create_reader(path, *, batch_size, argv)`.
+For single-stream readers, DeepPoseKit passes this factory a `Path`, the
 requested batch size, and a list of every argument after
 `--custom-reader-args`. Put DeepPoseKit flags before that marker. Return an
 iterable of NumPy arrays shaped `(batch, height, width, channels)` in frame
@@ -189,22 +189,26 @@ deepposekit predict model.keras recordings/ --output-dir predictions
 deepposekit predict model.keras recordings/ --recursive --output-dir predictions
 ```
 
-A batch loads the checkpoint once and writes one `.npy` per recording. The
-CLI creates the output directory and preserves paths relative to each input
-directory. It scans common video extensions with the built-in reader. Add
-`--recursive` to include subfolders. Output collisions fail before prediction,
-including names that differ only by case. If a recording fails during inference,
-previous completed outputs remain.
+The checkpoint loads once per run. The CLI creates the output directory and
+writes a `.npy` for each recording and selected stream. Directory scans preserve
+paths relative to the input directory. In the recursive example above,
+`recordings/session/clip.avi` produces `predictions/session/clip.npy`.
+Explicit file inputs use their basenames.
+The built-in reader scans common video extensions.
+
+Colliding output names fail before inference, including names that differ
+only by case. Existing outputs require `--overwrite`. If a recording fails
+during inference, completed outputs from the run remain available.
 
 Custom reader flags apply to every input. A reader may declare
 `INPUT_EXTENSIONS = (".h5", ".hdf5")` to filter directory scans. When a custom
 reader omits that setting, all regular input files are candidates. Choose a
 separate output directory for readers whose scans include `.npy` files.
 For recordings with several streams, a reader can also define
-`prediction_streams(argv)` and return a dictionary mapping output suffixes
-to factories that accept `(path, *, batch_size)`. Use `--output-dir` with
-multiple streams. For example, a stream named `Camera1` writes
-`recording.Camera1.npy`.
+`prediction_streams(argv)`. When this hook is present, the CLI uses its
+mapping of stream names to factories accepting `(path, *, batch_size)`.
+Use `--output-dir` with multiple streams. For example, a stream named
+`Camera1` writes `recording.Camera1.npy`.
 
 ### Help, completion, and environment
 
