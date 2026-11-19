@@ -32,6 +32,7 @@ Use `deepposekit.io.initialize_dataset` to prepare images and a keypoint
 skeleton, then label the annotation HDF5 with an external annotation tool.
 The package provides headless HDF5 readers, frame sampling, and keypoint
 augmentation.
+Leave the `parent` cell empty for each root keypoint in the skeleton CSV.
 
 ```python
 from deepposekit.io import DataGenerator, TrainingGenerator
