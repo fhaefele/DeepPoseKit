@@ -15,10 +15,9 @@
 
 import numpy as np
 
-from tensorflow.keras.layers import Conv2D, BatchNormalization, Add, MaxPool2D
+from keras.layers import Conv2D, BatchNormalization, Add, MaxPool2D
 from deepposekit.models.layers.convolutional import UpSampling2D
 from functools import partial
-from tensorflow.keras import backend as K
 
 
 __all__ = ["ResidualBlock", "FrontModule", "Output", "Hourglass"]
@@ -48,7 +47,7 @@ class ResidualBlock:
 
     def __call__(self, inputs):
         identity = inputs
-        if K.int_shape(identity)[-1] == self.filters:
+        if identity.shape[-1] == self.filters:
             identity = self.identity_bn(identity)
         else:
             identity = self.identity_bn(identity)

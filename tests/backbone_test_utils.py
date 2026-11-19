@@ -93,30 +93,32 @@ class BackboneWorkflowMixin:
                 self.assertEqual(
                     hashlib.file_digest(file, "sha256").hexdigest(), expected, name
                 )
-        with np.load(
-            root / f"{self.backbone_name}-reference.npz", allow_pickle=False
-        ) as reference:
-            with TemporaryDirectory() as temporary:
-                directory = Path(temporary)
-                legacy = directory / "relocated.hdf5"
-                shutil.copyfile(root / f"{self.backbone_name}.h5", legacy)
-                model = load_model(legacy, compile=False)
-                self._assert_reference_parity(model, reference, manifest, "legacy")
-                modern = directory / "imported.keras"
-                model.save(modern)
-                restored = load_model(modern, compile=False)
-                self._assert_reference_parity(
-                    restored, reference, manifest, "modern-reload"
-                )
+        with (
+            np.load(
+                root / f"{self.backbone_name}-reference.npz", allow_pickle=False
+            ) as reference,
+            TemporaryDirectory() as temporary,
+        ):
+            directory = Path(temporary)
+            legacy = directory / "relocated.hdf5"
+            shutil.copyfile(root / f"{self.backbone_name}.h5", legacy)
+            model = load_model(legacy, compile=False)
+            self._assert_reference_parity(model, reference, manifest, "legacy")
+            modern = directory / "imported.keras"
+            model.save(modern)
+            restored = load_model(modern, compile=False)
+            self._assert_reference_parity(
+                restored, reference, manifest, "modern-reload"
+            )
 
-                annotations = DataGenerator(
-                    str(root / f"{self.backbone_name}-annotations.h5")
-                )
-                trainable = load_model(modern, generator=annotations, compile=False)
-                optimizer = keras.optimizers.Adam()
-                trainable.compile(optimizer=optimizer, loss="mse")
-                history = trainable.fit(
-                    batch_size=2, epochs=1, steps_per_epoch=1, verbose=0
-                )
-                self.assertEqual(int(optimizer.iterations.numpy()), 1)
-                self.assertTrue(np.isfinite(history.history["loss"]).all())
+            annotations = DataGenerator(
+                str(root / f"{self.backbone_name}-annotations.h5")
+            )
+            trainable = load_model(modern, generator=annotations, compile=False)
+            optimizer = keras.optimizers.Adam()
+            trainable.compile(optimizer=optimizer, loss="mse")
+            history = trainable.fit(
+                batch_size=2, epochs=1, steps_per_epoch=1, verbose=0
+            )
+            self.assertEqual(int(optimizer.iterations.numpy()), 1)
+            self.assertTrue(np.isfinite(history.history["loss"]).all())
