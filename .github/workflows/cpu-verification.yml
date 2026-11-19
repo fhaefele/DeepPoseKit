@@ -52,8 +52,18 @@ jobs:
             https://raw.githubusercontent.com/jgraving/DeepPoseKit-Data/0aa5e3f5e8f9df63c48ba2bf491354472daa3e7e/datasets/fly/annotation_data_release.h5
           printf '%s  %s\n' '37eb6a44011bba317b6c6a9069e8c364737d8c27b0052ed1a3edeaf8bedeb5e8' "$annotations" |
             sha256sum --check
+      - name: Upload the legacy reference manifest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stackeddensenet-legacy-reference
+          path: ${{ runner.temp }}/dpk-reference/manifest.json
+          if-no-files-found: error
       - name: Sync the locked modern environment
         run: uv sync --locked --python 3.12
+      - name: Capture checkpoints with scoped legacy TensorFlow names
+        run: |
+          uv run --locked --script tests/fixtures/capture_legacy_reference.py \
+            --source "$RUNNER_TEMP/dpk-legacy" --output "$DPK_LEGACY_REFERENCE_DIR" --scoped-weights
       - name: Run the CPU suite without network access
         run: |
           variables=HOME,UV_CACHE_DIR,UV_PYTHON_INSTALL_DIR,DPK_LEGACY_REFERENCE_DIR,CUDA_VISIBLE_DEVICES,MPLBACKEND,OMP_NUM_THREADS,TF_ENABLE_ONEDNN_OPTS,TF_NUM_INTEROP_THREADS,TF_NUM_INTRAOP_THREADS

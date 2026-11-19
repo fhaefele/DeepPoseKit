@@ -18,6 +18,7 @@ _DENSENET_STEM_NAMES = {
 }
 
 _AUTO_WEIGHTED_LAYER = re.compile(r"(conv2d|batch_normalization)(?:_(\d+))?")
+_TF_SCOPE_SUFFIX = re.compile(r"(.+)_[1-9][0-9]*")
 
 
 def read_config(value, field):
@@ -102,14 +103,27 @@ def _weight_name(name):
     return f"{_DENSENET_STEM_NAMES.get(layer, layer)}/{role}"
 
 
-def _legacy_weights(group):
+def _without_tf_scope_suffix(scope):
+    match = _TF_SCOPE_SUFFIX.fullmatch(scope)
+    if match is not None:
+        original = match[1]
+        return _DENSENET_STEM_NAMES.get(original, original)
+    return scope
+
+
+def _legacy_weights(group, *, legacy_tf_scopes):
     tensors = {}
     for name in _hdf_names(group, "layer_names"):
         layer = group.get(name)
         if not isinstance(layer, h5py.Group):
             raise ValueError(f"Missing legacy HDF5 layer {name!r}")
+        layer_name = _DENSENET_STEM_NAMES.get(name, name)
         for weight in _hdf_names(layer, "weight_names"):
-            key = (_DENSENET_STEM_NAMES.get(name, name), _weight_name(weight))
+            weight_name = _weight_name(weight)
+            scope, _, role = weight_name.rpartition("/")
+            if legacy_tf_scopes and _without_tf_scope_suffix(scope) == layer_name:
+                weight_name = f"{layer_name}/{role}"
+            key = (layer_name, weight_name)
             if key in tensors:
                 raise ValueError(f"Duplicate legacy tensor identity {key}")
             dataset = layer.get(weight)
@@ -165,13 +179,37 @@ def _relative_layer_names(tensors):
     return relative
 
 
-def assign_legacy_weights(model, group, *, relative_layer_names=False):
+def _resolve_nested_tf_scopes(source, target):
+    # The HDF5 group for a nested model holds tensors for all of its child
+    # layers. Match a suffixed scope only to an exact child and role in that group.
+    resolved = {}
+    for key, dataset in source.items():
+        if key not in target:
+            layer, weight = key
+            scope, _, role = weight.rpartition("/")
+            candidate = (layer, f"{_without_tf_scope_suffix(scope)}/{role}")
+            if candidate in target:
+                key = candidate
+        if key in resolved:
+            raise ValueError(f"Duplicate legacy tensor identity {key}")
+        resolved[key] = dataset
+    return resolved
+
+
+def assign_legacy_weights(model, group, *, existing_model=False):
     """Validate and read every tensor before changing any model weights."""
-    source = _legacy_weights(group)
+    writer = group.attrs.get("keras_version")
+    if isinstance(writer, bytes):
+        writer = writer.decode("utf-8")
+    legacy_tf_scopes = isinstance(writer, str) and writer.endswith("-tf")
+
+    source = _legacy_weights(group, legacy_tf_scopes=legacy_tf_scopes)
     target = _model_weights(model)
-    if relative_layer_names:
+    if existing_model:
         source = _relative_layer_names(source)
         target = _relative_layer_names(target)
+    if legacy_tf_scopes and source.keys() != target.keys():
+        source = _resolve_nested_tf_scopes(source, target)
     missing = target.keys() - source.keys()
     extra = source.keys() - target.keys()
     if missing or extra:
@@ -192,5 +230,24 @@ def assign_legacy_weights(model, group, *, relative_layer_names=False):
             )
         assignments.append((variable, dataset[()]))
 
-    for variable, value in assignments:
-        variable.assign(value)
+    if not existing_model:
+        for variable, value in assignments:
+            variable.assign(value)
+        return
+
+    # Reuse the staging list for undo data so peak storage grows by at most
+    # one tensor. Include the current variable in case assign writes then fails.
+    attempted = 0
+    try:
+        for i, (variable, value) in enumerate(assignments):
+            assignments[i] = (variable, variable.numpy())
+            attempted += 1
+            variable.assign(value)
+    except Exception as error:
+        for i in reversed(range(attempted)):
+            variable, original = assignments[i]
+            try:
+                variable.assign(original)
+            except Exception as rollback_error:
+                error.add_note(f"Could not restore {variable.path}: {rollback_error}")
+        raise
