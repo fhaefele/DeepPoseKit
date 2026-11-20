@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from inspect import Parameter, signature
 from math import isfinite
+from multiprocessing import get_start_method
 import json
 import os
 from pathlib import Path
@@ -330,7 +331,10 @@ class _TrainingBackup(keras.callbacks.BackupAndRestore):
             return False
         with h5py.File(self._completed_path, "r") as weights:
             if weights.attrs.get("deepposekit_training_run") != run_id:
-                return False
+                raise ValueError(
+                    "The completed backup belongs to different inputs or training options. "
+                    "Restore the original inputs or use a new backup directory."
+                )
             owned = json.loads(weights.attrs.get("deepposekit_backup_files", "[]"))
         self._written = {path for path in self.files if path.name in owned}
         self._written.add(self._completed_path)
@@ -531,6 +535,33 @@ def _fine_tune(config, data, source):
     return load_model(source, generator=generator, compile=False)
 
 
+def _directory_inputs(source, output):
+    """Visit directory inputs in a deterministic order, including linked files."""
+
+    def raise_walk_error(error):
+        raise error
+
+    visited = set()
+    for folder, directories, names in source.walk(
+        on_error=raise_walk_error, follow_symlinks=True
+    ):
+        details = folder.stat()
+        identity = (details.st_dev, details.st_ino)
+        if identity in visited:
+            directories.clear()
+            continue
+        visited.add(identity)
+        if folder.resolve() == output.parent:
+            # Model publication owns these staging directories.
+            directories[:] = [
+                name for name in directories if not name.startswith(".deepposekit-")
+            ]
+            names = [name for name in names if name != output.name]
+        directories.sort()
+        for name in sorted(names):
+            yield folder / name
+
+
 def _training_run_id(config, selected, output):
     digest = sha256(config.source.read_bytes())
     inputs = [config.source, *config.data.inputs]
@@ -552,6 +583,17 @@ def _training_run_id(config, selected, output):
             fingerprint += (details.st_size, details.st_mtime_ns)
         identity.append(fingerprint)
     digest.update(json.dumps([str(output.absolute()), identity]).encode())
+    if config.data.path.is_dir():
+        for path in _directory_inputs(config.data.path, output.resolve()):
+            details = path.stat()
+            fingerprint = (
+                str(path.relative_to(config.data.path)),
+                details.st_dev,
+                details.st_ino,
+                details.st_size,
+                details.st_mtime_ns,
+            )
+            digest.update(json.dumps(fingerprint).encode())
     return digest.hexdigest()
 
 
@@ -568,9 +610,17 @@ def train(args):
     output = output_file(config.output, ".keras", args.overwrite, *protected)
     colored = colors_enabled(sys.stderr, getattr(args, "color", "auto"))
     progress = TrainingProgress(sys.stderr, colored)
+    spawn_workers = (
+        config.data.custom_generator is not None
+        and config.fit_options.get("use_multiprocessing", False)
+        and config.fit_options.get("n_workers", 1) > 0
+        and get_start_method() != "fork"
+    )
     with redirect_stdout(progress), ExitStack() as resources:
         resources.callback(progress.finish)
-        data = resources.enter_context(open_data(config.data))
+        data = resources.enter_context(
+            open_data(config.data, spawn_workers=spawn_workers)
+        )
         model = (
             build_model(config, data)
             if selected is None
@@ -589,8 +639,13 @@ def train(args):
         model.compile(**compile_options)
         fit = dict(config.fit_options)
         recovered = []
+        run_id = None
         if "callbacks" in fit:
-            run_id = _training_run_id(config, selected, output)
+            if any(
+                name == "BackupAndRestore"
+                for name, _ in named_list(fit["callbacks"], "[training].callbacks")
+            ):
+                run_id = _training_run_id(config, selected, output)
             fit["callbacks"], recovered = _callback_list(
                 config, selected, args.overwrite, resources, run_id=run_id
             )

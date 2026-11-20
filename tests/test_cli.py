@@ -694,6 +694,20 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(status, 0, errors)
             self.assertTrue(preview.is_file())
 
+            spawn_config = work / "spawn.toml"
+            spawn_config.write_text(
+                content.replace("model.keras", "spawn.keras").replace(
+                    "[training]", "[training]\nuse_multiprocessing = true"
+                )
+            )
+            with patch(
+                "deepposekit.cli.training.get_start_method", return_value="spawn"
+            ):
+                status, _, errors = invoke("train", spawn_config)
+            self.assertEqual(status, 1)
+            self.assertIn("need an importable generator class", errors)
+            self.assertFalse((work / "spawn.keras").exists())
+
             checkpoint = work / "model.keras"
             config.write_text(
                 content.replace("custom.py", "unused.py").replace(
@@ -1045,7 +1059,9 @@ class WorkflowTests(unittest.TestCase):
             root = Path(directory)
             source = root / "samples"
             source.mkdir()
-            (source / "labels.h5").write_bytes(self.annotations.read_bytes())
+            labels = source / "labels.h5"
+            original_labels = self.annotations.read_bytes()
+            labels.write_bytes(original_labels)
             (root / "loader.py").write_text(
                 "from deepposekit.io import DataGenerator\n"
                 "def create_generator(path, *, argv):\n"
@@ -1082,6 +1098,24 @@ class WorkflowTests(unittest.TestCase):
             self.assertFalse(checkpoint.exists())
             self.assertNotEqual(source.stat().st_mtime_ns, before_publication)
 
+            original = labels.stat()
+            with h5py.File(labels, "r+") as file:
+                file["annotations"][0, 0, 0] += 1
+            os.utime(
+                labels,
+                ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000),
+            )
+            with patch.object(
+                BaseModel, "fit", side_effect=AssertionError("unexpected fit")
+            ):
+                status, _, errors = invoke("train", config, "--overwrite")
+            self.assertEqual(status, 1)
+            self.assertIn("completed backup belongs to different inputs", errors)
+            self.assertTrue(completed.is_file())
+            self.assertFalse(checkpoint.exists())
+
+            labels.write_bytes(original_labels)
+            os.utime(labels, ns=(original.st_atime_ns, original.st_mtime_ns))
             with patch.object(
                 BaseModel, "fit", side_effect=AssertionError("unexpected fit")
             ):

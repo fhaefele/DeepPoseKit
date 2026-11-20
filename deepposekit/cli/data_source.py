@@ -83,7 +83,7 @@ def read_data_source(
 
 
 @contextmanager
-def open_data(source, *, full=False):
+def open_data(source, *, full=False, spawn_workers=False):
     if source.custom_generator is None:
         options = dict(source.options)
         annotation_summary(source.path, options.get("dataset", "images"))
@@ -106,6 +106,11 @@ def open_data(source, *, full=False):
                 "create_generator must return a deepposekit.io.BaseGenerator instance"
             )
         try:
+            if spawn_workers and type(data).__module__ == module.__name__:
+                raise ValueError(
+                    "Spawn and forkserver workers need an importable generator class. "
+                    "Define the class in an installed module or set use_multiprocessing=false."
+                )
             if not len(data):
                 raise ValueError("The custom generator has no samples")
             yield data

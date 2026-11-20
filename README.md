@@ -165,7 +165,10 @@ def create_generator(path, *, argv):
 
 For a different format, return your own `BaseGenerator` subclass that
 supplies image batches, keypoint coordinates, and their shapes. Its instances
-must support deep copying for training and validation. Define `graph`,
+must support deep copying for training and validation. If you enable
+multiprocessing with spawn or forkserver workers, put the generator class in
+an importable module. Thread workers can use a class defined in the loader
+script. Define `graph`,
 `swap_index`, and `skeleton_names` when your dataset has that metadata.
 
 Replace the `[data]` table in the training example with the following and
