@@ -71,6 +71,32 @@ class ReferenceTests(unittest.TestCase):
         self.assertNotIn("--custom-reader", fields)
         self.assertEqual(document["command"]["examples"], [])
 
+    def test_wrapped_reader_commands_omit_generic_examples(self):
+        def configure_reader(parser, *, role):
+            parser.add_argument("--camera", required=True)
+
+        for path in (
+            ("dataset", "init"),
+            ("dataset", "append"),
+            ("predictions", "view"),
+        ):
+            with self.subTest(path=path):
+                document = json.loads(
+                    invoke(
+                        "help",
+                        "--format",
+                        "json",
+                        *path,
+                        configure_reader=configure_reader,
+                    )
+                )
+                command = document["command"]
+                camera = next(
+                    arg for arg in command["arguments"] if arg["name"] == "camera"
+                )
+                self.assertTrue(camera["required"])
+                self.assertEqual(command["examples"], [])
+
     def test_help_exit_and_starts_without_tensorflow(self):
         out = StringIO()
         with redirect_stderr(out), self.assertRaises(SystemExit) as error:
