@@ -47,6 +47,23 @@ class SkeletonLoadingTests(unittest.TestCase):
         self.assertEqual(list(result["tree"]), [-1, 0, 0])
         self.assertEqual(list(result["swap_index"]), [-1, 2, 1])
 
+    def test_trimming_preserves_large_numeric_ids_in_mixed_columns(self):
+        first = 2**53
+        second = first + 1
+        skeleton = pd.DataFrame(
+            {
+                "name": [first, second, " head "],
+                "parent": [None, None, second],
+                "swap": [second, first, None],
+            },
+            dtype=object,
+        )
+        result = initialize_skeleton(skeleton)
+        self.assertEqual(list(result["name"]), [first, second, "head"])
+        self.assertEqual(result["parent"].iloc[2], second)
+        self.assertEqual(list(result["tree"]), [-1, -1, 1])
+        self.assertEqual(list(result["swap_index"]), [1, 0, -1])
+
     def test_rejects_empty_or_colliding_trimmed_names(self):
         for names, message in (
             (["head", " "], "nonempty"),

@@ -59,12 +59,17 @@ def initialize_skeleton(skeleton):
         if column not in skeleton.columns:
             continue
         values = skeleton[column]
-        trimmed = values.map(
-            lambda value: value.strip() if isinstance(value, str) else value
+        # Inferred dtype can round integer IDs in mixed columns with missing cells.
+        trimmed = pd.Series(
+            [value.strip() if isinstance(value, str) else value for value in values],
+            index=values.index,
+            dtype=object,
         )
         if column == "name":
             if trimmed.eq("").any():
-                raise ValueError("Skeleton names must be nonempty after trimming whitespace")
+                raise ValueError(
+                    "Skeleton names must be nonempty after trimming whitespace"
+                )
             if trimmed.nunique() < values.nunique():
                 raise ValueError("Skeleton names collide after trimming whitespace")
         else:
