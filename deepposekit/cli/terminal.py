@@ -28,7 +28,7 @@ class HelpFormatter(RichHelpFormatter):
 def color_mode(argv):
     selected = "auto"
     for index, token in enumerate(argv):
-        if token in {"--", "--custom-reader-args"}:
+        if token == "--":
             break
         if token.startswith("--color="):
             value = token.partition("=")[2]

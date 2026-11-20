@@ -13,6 +13,11 @@ from deepposekit import __version__
 from deepposekit.cli.terminal import TerminalParser, color_mode
 
 READER_ARGS = "--custom-reader-args"
+GENERATOR_ARGS = "--custom-generator-args"
+FORWARDED_ARGS = {
+    READER_ARGS: "custom_reader_args",
+    GENERATOR_ARGS: "custom_generator_args",
+}
 
 
 def _path(parser, name, *extensions, **options):
@@ -423,6 +428,25 @@ def make_parser(
         "keras",
         help="Full checkpoint to fine-tune.",
     )
+    _path(
+        train,
+        "--custom-generator",
+        "py",
+        help="Python file with a create_generator factory. Overrides the TOML path.",
+    )
+    train.add_argument(
+        GENERATOR_ARGS,
+        nargs=argparse.REMAINDER,
+        metavar="ARG",
+        help=(
+            "Forward the remaining arguments to the custom generator. "
+            "Overrides the TOML arguments."
+        ),
+    )
+    train.reference_notes.append(
+        "Configure a custom generator in `[data]` or with `--custom-generator`. "
+        "`--custom-generator-args` replaces the TOML arguments and forwards every remaining token."
+    )
     output_options(train)
 
     evaluate = command(
@@ -542,18 +566,20 @@ def main(
     """
     executable = argv is None
     argv = sys.argv[1:] if executable else list(argv)
+    # argparse treats "--" specially even inside a REMAINDER. Parse only the
+    # DeepPoseKit prefix so plugins receive their arguments unchanged.
+    end = argv.index("--") if "--" in argv else len(argv)
+    index = next(
+        (i for i, token in enumerate(argv[:end]) if token in FORWARDED_ARGS), len(argv)
+    )
     parser = make_parser(
-        color_mode(argv),
+        color_mode(argv[:index]),
         prog=prog,
         version=version,
         configure_predict=configure_predict,
         configure_reader=configure_reader,
     )
     argcomplete.autocomplete(parser)
-    # argparse treats "--" specially even inside a REMAINDER. Parse only the
-    # DeepPoseKit prefix so a reader receives all remaining arguments unchanged.
-    end = argv.index("--") if "--" in argv else len(argv)
-    index = argv.index(READER_ARGS) if READER_ARGS in argv[:end] else len(argv)
     args, extra = parser.parse_known_args(argv[: index + 1])
     # A variadic positional stops at the first option. Keep accepting input
     # paths separated by flags for predictions and dataset merges.
@@ -570,7 +596,7 @@ def main(
     if extra:
         parser.error(f"unrecognized arguments: {' '.join(extra)}")
     if index < len(argv):
-        args.custom_reader_args = argv[index + 1 :]
+        setattr(args, FORWARDED_ARGS[argv[index]], argv[index + 1 :])
     if args.command is None:
         parser.print_help()
         return 0

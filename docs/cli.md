@@ -435,7 +435,7 @@ deepposekit inspect labeled.h5
 Train or fine-tune from a TOML config.
 
 ```text
-deepposekit train [-h] [--color {auto,always,never}] [--init-from INIT_FROM] [--overwrite] config
+deepposekit train [-h] [--color {auto,always,never}] [--init-from INIT_FROM] [--custom-generator CUSTOM_GENERATOR] [--custom-generator-args ...] [--overwrite] config
 ```
 
 | Argument or flags | Required | Default | Description |
@@ -444,8 +444,12 @@ deepposekit train [-h] [--color {auto,always,never}] [--init-from INIT_FROM] [--
 | `--color` | No | `"auto"` | Terminal colors (default: auto). Values `auto`, `always`, `never`. |
 | `config` | Yes | — | Training configuration file. |
 | `--init-from` | No | — | Full checkpoint to fine-tune. |
+| `--custom-generator` | No | — | Python file with a create_generator factory. Overrides the TOML path. |
+| `--custom-generator-args` | No | — | Forward the remaining arguments to the custom generator. Overrides the TOML arguments. |
 | `--overwrite` | No | `false` | Replace an existing output. |
 
+
+Configure a custom generator in `[data]` or with `--custom-generator`. `--custom-generator-args` replaces the TOML arguments and forwards every remaining token.
 
 Train a model from a TOML file.
 

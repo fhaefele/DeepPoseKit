@@ -129,17 +129,14 @@ def open_video(path, batch_size, gray):
 
 
 @contextmanager
-def custom_reader_module(path):
-    if path is None:
-        yield None
-        return
+def custom_module(path, kind):
     path = input_file(path)
     if path.suffix != ".py":
-        raise ValueError("A custom reader must be a Python file (.py)")
-    name = f"_deepposekit_reader_{uuid4().hex}"
+        raise ValueError(f"A custom {kind} must be a Python file (.py)")
+    name = f"_deepposekit_{kind}_{uuid4().hex}"
     spec = spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise ValueError(f"Cannot load custom reader: {path}")
+        raise ValueError(f"Cannot load custom {kind}: {path}")
     module = module_from_spec(spec)
     sys.modules[name] = module
     try:
@@ -149,13 +146,22 @@ def custom_reader_module(path):
             compile(path.read_bytes(), spec.origin, "exec", dont_inherit=True),
             vars(module),
         )
+        yield module
+    finally:
+        sys.modules.pop(name, None)
+
+
+@contextmanager
+def custom_reader_module(path):
+    if path is None:
+        yield None
+        return
+    with custom_module(path, "reader") as module:
         if not callable(getattr(module, "create_reader", None)):
             raise ValueError(
                 "Custom reader must define create_reader(path, *, batch_size, argv)"
             )
         yield module
-    finally:
-        sys.modules.pop(name, None)
 
 
 def _prediction_streams(module, argv):
@@ -469,16 +475,19 @@ def convert(args):
         raise ValueError("Expected a legacy HDF5 checkpoint or weights file")
     protected = (source,) if args.config is None else (source, args.config)
     output = output_file(args.output, ".keras", args.overwrite, *protected)
-    if args.config is None:
-        model = load_model(source, compile=False)
-    else:
-        from deepposekit.cli.training import build_model, read_training_config
+    with ExitStack() as resources:
+        if args.config is None:
+            model = load_model(source, compile=False)
+        else:
+            from deepposekit.cli.data_source import open_data
+            from deepposekit.cli.training import build_model, read_training_config
 
-        config = read_training_config(args.config, for_weights=True)
-        output_file(output, ".keras", args.overwrite, config.annotations)
-        model = build_model(config, initialize_weights=False)
-        load_legacy_weights(model, source)
-    model.save(output, overwrite=args.overwrite)
+            config = read_training_config(args.config, for_weights=True)
+            output_file(output, ".keras", args.overwrite, *config.data.inputs)
+            data = resources.enter_context(open_data(config.data))
+            model = build_model(config, data, initialize_weights=False)
+            load_legacy_weights(model, source)
+        model.save(output, overwrite=args.overwrite)
     print(output)
 
 

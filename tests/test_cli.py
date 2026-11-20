@@ -632,6 +632,201 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(closed.is_file())
         self.assertEqual(output.read_bytes(), prior)
 
+    def test_custom_generator_trains_previews_and_overrides_for_fine_tuning(self):
+        with TemporaryDirectory() as directory:
+            work = Path(directory)
+            samples = work / "labeled-data"
+            samples.mkdir()
+            keypoints = np.tile([[10.0, 12.0], [36.0, 24.0]], (5, 1, 1))
+            np.savez(samples / "train.npz", images=self.images, keypoints=keypoints)
+            np.savez(
+                samples / "validation.npz",
+                images=self.images[:-1],
+                keypoints=keypoints[:-1],
+            )
+            module = work / "custom.py"
+            module.write_text(
+                "import sys\n"
+                "import numpy as np\n"
+                "from deepposekit.io import BaseGenerator\n\n"
+                "class ArrayGenerator(BaseGenerator):\n"
+                "    skeleton_names = ['head', 'tail']\n"
+                "    def __init__(self, images, keypoints):\n"
+                "        self.images = images\n"
+                "        self.keypoints = keypoints\n"
+                "        super().__init__()\n"
+                "    def __len__(self): return len(self.images)\n"
+                "    def compute_image_shape(self): return self.images.shape[1:]\n"
+                "    def compute_keypoints_shape(self): return self.keypoints.shape[1:]\n"
+                "    def get_images(self, indices):\n"
+                "        assert __name__ in sys.modules\n"
+                "        return self.images[indices]\n"
+                "    def get_keypoints(self, indices): return self.keypoints[indices]\n\n"
+                "def create_generator(path, *, argv):\n"
+                "    assert argv in (['--split', 'train'],\n"
+                "                    ['--split', 'validation', '--', '--color', 'always'])\n"
+                "    with np.load(path / f'{argv[1]}.npz') as data:\n"
+                "        return ArrayGenerator(data['images'], data['keypoints'])\n"
+            )
+            config = work / "training.toml"
+            content = self.config.read_text().replace(
+                'annotations = "annotations.h5"',
+                'source = "labeled-data"\ncustom_generator = "custom.py"\n'
+                'custom_generator_args = ["--split", "train"]',
+            )
+            config.write_text(content)
+            status, _, errors = invoke("train", config)
+            self.assertEqual(status, 0, errors)
+
+            preview = samples / "preview.png"
+            status, _, errors = invoke(
+                "imgaug",
+                "preview",
+                "--config",
+                config,
+                "--frame",
+                4,
+                "--samples",
+                1,
+                "--output",
+                preview,
+                "--overwrite",
+            )
+            self.assertEqual(status, 0, errors)
+            original_preview = preview.read_bytes()
+            alias = work / "sample-alias"
+            alias.symlink_to(samples, target_is_directory=True)
+            status, _, errors = invoke(
+                "imgaug",
+                "preview",
+                "--config",
+                config,
+                "--output",
+                alias / preview.name,
+                "--overwrite",
+            )
+            self.assertEqual(status, 1)
+            self.assertIn("Preview output would replace a file", errors)
+            self.assertEqual(preview.read_bytes(), original_preview)
+
+            camera = work / "camera-files"
+            camera.mkdir()
+            camera_frame = camera / "frame.png"
+            camera_frame.write_bytes(original_preview)
+            (samples / "camera").symlink_to(camera, target_is_directory=True)
+            for destination in (
+                alias / "camera" / camera_frame.name,
+                alias / "camera" / ".." / camera.name / camera_frame.name,
+            ):
+                with self.subTest(destination=destination):
+                    status, _, errors = invoke(
+                        "imgaug",
+                        "preview",
+                        "--config",
+                        config,
+                        "--output",
+                        destination,
+                        "--overwrite",
+                    )
+                    self.assertEqual(status, 1)
+                    self.assertIn("Preview output would replace a file", errors)
+                    self.assertEqual(camera_frame.read_bytes(), original_preview)
+
+            outside_preview = work / "outside-preview.png"
+            outside_preview.write_bytes(b"old preview")
+            with chdir(samples):
+                status, _, errors = invoke(
+                    "imgaug",
+                    "preview",
+                    "--config",
+                    config,
+                    "--samples",
+                    1,
+                    "--output",
+                    "../outside-preview.png",
+                    "--overwrite",
+                )
+            self.assertEqual(status, 0, errors)
+            self.assertTrue(outside_preview.read_bytes().startswith(b"\x89PNG"))
+
+            spawn_config = work / "spawn.toml"
+            spawn_config.write_text(
+                content.replace("model.keras", "spawn.keras").replace(
+                    "[training]", "[training]\nuse_multiprocessing = true"
+                )
+            )
+            with patch(
+                "deepposekit.cli.data_source.get_start_method", return_value="spawn"
+            ):
+                status, _, errors = invoke("train", spawn_config)
+            self.assertEqual(status, 1)
+            self.assertIn("need an importable generator class", errors)
+            self.assertFalse((work / "spawn.keras").exists())
+
+            checkpoint = work / "model.keras"
+            config.write_text(
+                content.replace("custom.py", "unused.py").replace(
+                    "model.keras", "fine-tuned.keras"
+                )
+            )
+            with chdir(work):
+                status, _, errors = invoke(
+                    "train",
+                    config,
+                    "--init-from",
+                    checkpoint,
+                    "--custom-generator",
+                    "custom.py",
+                    "--custom-generator-args",
+                    "--split",
+                    "validation",
+                    "--",
+                    "--color",
+                    "always",
+                )
+            self.assertEqual(status, 0, errors)
+            for file, expected_count in (
+                (checkpoint, 5),
+                (work / "fine-tuned.keras", 4),
+            ):
+                model = load_model(file, compile=False)
+                data = model._checkpoint_metadata["train_generator_config"]["config"]
+                self.assertEqual(data["generator"], "ArrayGenerator")
+                self.assertEqual(data["n_samples"], expected_count)
+            self.assertFalse((work / "__pycache__").exists())
+            self.assertFalse(
+                any(name.startswith("_deepposekit_generator_") for name in sys.modules)
+            )
+
+    def test_custom_generator_rejects_invalid_factory_and_orphaned_arguments(self):
+        with TemporaryDirectory() as directory:
+            work = Path(directory)
+            module = work / "invalid.py"
+            config = work / "training.toml"
+            config.write_text(
+                self.config.read_text().replace(
+                    '"annotations.h5"', json.dumps(str(self.annotations))
+                )
+            )
+            status, _, errors = invoke(
+                "train", config, "--custom-generator-args", "--split", "train"
+            )
+            self.assertEqual(status, 1)
+            self.assertIn("require a custom generator", errors)
+
+            for source, expected in (
+                ("", "must define create_generator"),
+                ("def create_generator(path, *, argv): return 42\n", "must return"),
+            ):
+                with self.subTest(expected=expected):
+                    module.write_text(source)
+                    status, _, errors = invoke(
+                        "train", config, "--custom-generator", module
+                    )
+                    self.assertEqual(status, 1)
+                    self.assertIn(expected, errors)
+                    self.assertFalse((work / "model.keras").exists())
+
     def test_fine_tune_with_existing_weights_and_reject_wrong_skeleton(self):
         config = self.path / "fine-tune.toml"
         config.write_text(
@@ -910,6 +1105,98 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(metrics.read_bytes(), prior_metrics)
         self.assertEqual(list(backup.iterdir()), [inactive])
         self.assertEqual(inactive.read_bytes(), b"inactive prior generation")
+
+    def test_custom_generator_recovers_checkpoint_in_source_directory(self):
+        from deepposekit.cli.operations import atomic_output
+        from deepposekit.models.engine import BaseModel
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "samples"
+            source.mkdir()
+            primary = source / "a"
+            alternate = source / "b"
+            primary.mkdir()
+            alternate.mkdir()
+            selected = source / "current"
+            selected.symlink_to(primary.name, target_is_directory=True)
+            labels = primary / "labels.h5"
+            original_labels = self.annotations.read_bytes()
+            labels.write_bytes(original_labels)
+            (alternate / labels.name).write_bytes(original_labels)
+            with h5py.File(alternate / labels.name, "r+") as file:
+                file["annotations"][0, 0, 0] += 2
+            (root / "loader.py").write_text(
+                "from deepposekit.io import DataGenerator\n"
+                "def create_generator(path, *, argv):\n"
+                "    return DataGenerator(str(path / 'current' / 'labels.h5'))\n"
+            )
+            config = root / "training.toml"
+            config.write_text(
+                self.config.read_text()
+                .replace(
+                    'annotations = "annotations.h5"',
+                    'source = "samples"\ncustom_generator = "loader.py"',
+                )
+                .replace(
+                    'checkpoint = "model.keras"', 'checkpoint = "samples/model.keras"'
+                )
+                .replace(
+                    '"TerminateOnNaN"', '{name="BackupAndRestore", backup_dir="backup"}'
+                )
+            )
+            checkpoint = source / "model.keras"
+            completed = root / "backup" / "completed.weights.h5"
+
+            def fail_publication(path, *, overwrite):
+                with atomic_output(path, overwrite) as temporary:
+                    temporary.write_bytes(b"staged checkpoint")
+                    raise FileExistsError("concurrent output")
+
+            before_publication = source.stat().st_mtime_ns
+            with patch.object(BaseModel, "save", side_effect=fail_publication):
+                status, _, errors = invoke("train", config)
+            self.assertEqual(status, 1)
+            self.assertIn("concurrent output", errors)
+            self.assertTrue(completed.is_file())
+            self.assertFalse(checkpoint.exists())
+            self.assertNotEqual(source.stat().st_mtime_ns, before_publication)
+
+            original = labels.stat()
+            with h5py.File(labels, "r+") as file:
+                file["annotations"][0, 0, 0] += 1
+            os.utime(
+                labels,
+                ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000),
+            )
+            with patch.object(
+                BaseModel, "fit", side_effect=AssertionError("unexpected fit")
+            ):
+                status, _, errors = invoke("train", config, "--overwrite")
+            self.assertEqual(status, 1)
+            self.assertIn("completed backup belongs to different inputs", errors)
+            self.assertTrue(completed.is_file())
+            self.assertFalse(checkpoint.exists())
+
+            labels.write_bytes(original_labels)
+            os.utime(labels, ns=(original.st_atime_ns, original.st_mtime_ns))
+            selected.unlink()
+            selected.symlink_to(alternate.name, target_is_directory=True)
+            status, _, errors = invoke("train", config, "--overwrite")
+            self.assertEqual(status, 1)
+            self.assertIn("completed backup belongs to different inputs", errors)
+            self.assertTrue(completed.is_file())
+
+            selected.unlink()
+            selected.symlink_to(primary.name, target_is_directory=True)
+            with patch.object(
+                BaseModel, "fit", side_effect=AssertionError("unexpected fit")
+            ):
+                status, _, errors = invoke("train", config, "--overwrite")
+            self.assertEqual(status, 0, errors)
+            model = load_model(checkpoint, compile=True)
+            self.assertEqual(int(model.train_model.optimizer.iterations), 1)
+            self.assertFalse(completed.exists())
 
     def test_fine_tune_reuses_normalized_leap_constructor_options(self):
         config = self.path / "leap.toml"

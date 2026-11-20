@@ -160,6 +160,70 @@ check the original keypoint order and skeleton before fine-tuning.
 deepposekit train fine-tune.toml --init-from best_model_densenet.h5
 ```
 
+### Train from a custom labeled dataset
+
+A custom generator lets `train` and `imgaug preview` read labeled data through
+the same Python module. Save a module such as `my_generator.py` that defines
+`create_generator(path, *, argv)` and returns a
+`deepposekit.io.BaseGenerator` instance. For example, this factory selects
+one of several annotation files in a directory.
+
+```python
+import argparse
+
+from deepposekit.io import DataGenerator
+
+
+def create_generator(path, *, argv):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--split", choices=("train", "new-labels"), default="train")
+    options = parser.parse_args(argv)
+    return DataGenerator(str(path / f"{options.split}.h5"))
+```
+
+For a different format, return your own `BaseGenerator` subclass that
+supplies image batches, keypoint coordinates, and their shapes. Its instances
+must support deep copying for training and validation. If you enable
+multiprocessing with spawn or forkserver workers, put the generator class in
+an importable module. Thread workers can use a class defined in the loader
+script. Define `graph`,
+`swap_index`, and `skeleton_names` when your dataset has that metadata.
+
+Replace the `[data]` table in the training example with the following and
+keep the other training options. This example expects
+`labeled-data/train.h5` beside the config.
+
+```toml
+[data]
+source = "labeled-data/"
+custom_generator = "my_generator.py"
+custom_generator_args = ["--split", "train"]
+```
+
+```bash
+deepposekit train training.toml
+deepposekit imgaug preview --config training.toml --output preview.png
+deepposekit train fine-tune.toml --init-from fly.keras \
+  --custom-generator my_generator.py --custom-generator-args --split new-labels
+```
+
+For the fine-tuning command, copy the training config to `fine-tune.toml`,
+set a new output checkpoint, and put your additional labeled data in
+`labeled-data/new-labels.h5`.
+
+`source` can be a file or directory. TOML paths are relative to the config.
+A `--custom-generator` path is relative to the working directory. The CLI
+flags override the corresponding TOML values. Put `--custom-generator-args`
+last so the module receives every remaining token. Pass it with no values
+to clear the configured arguments. An existing `[data].annotations` path can
+also serve as the source. Pass any loader-specific dataset or mode settings
+through the custom generator's arguments.
+
+For augmentation preview, `--frame` selects a zero-based index in the
+custom generator's sample order. Preview files inside a custom source directory
+are created exclusively. Save previews outside that directory to replace them.
+Use Python modules you trust, since DeepPoseKit executes the selected file.
+
 ### Convert and predict
 
 ```bash

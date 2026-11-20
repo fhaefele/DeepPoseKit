@@ -8,6 +8,7 @@ from math import isfinite
 import json
 import os
 from pathlib import Path
+from stat import S_ISDIR
 import sys
 import tomllib
 import warnings
@@ -18,15 +19,16 @@ import numpy as np
 
 from deepposekit import callbacks
 from deepposekit.cli.augmentations import build_augmenters
-from deepposekit.cli.components import builtin_class, named_list, named_spec
-from deepposekit.cli.operations import (
-    annotation_summary,
-    atomic_output,
-    input_file,
-    output_file,
+from deepposekit.cli.components import (
+    builtin_class,
+    config_path,
+    named_list,
+    named_spec,
 )
+from deepposekit.cli.data_source import DataSource, open_data, read_data_source
+from deepposekit.cli.operations import atomic_output, input_file, output_file
 from deepposekit.cli.terminal import TrainingProgress, colors_enabled
-from deepposekit.io import DataGenerator, TrainingGenerator
+from deepposekit.io import TrainingGenerator
 from deepposekit.models import (
     DeepLabCut,
     LEAP,
@@ -46,8 +48,7 @@ MODELS = {
 @dataclass(frozen=True)
 class TrainingConfig:
     source: Path
-    annotations: Path
-    data_options: dict
+    data: DataSource
     generator_options: dict
     model_name: str
     model_options: dict
@@ -79,18 +80,14 @@ def _section(source, name, allowed):
     return dict(data)
 
 
-def _path(value, directory, option):
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{option} must be a nonempty path")
-    return directory / Path(value).expanduser()
-
-
 def _integer(value, minimum, option):
     if type(value) is not int or value < minimum:
         raise ValueError(f"{option} must be an integer >= {minimum}")
 
 
-def read_training_config(path, *, for_weights=False):
+def read_training_config(
+    path, *, for_weights=False, custom_generator=None, custom_generator_args=None
+):
     path = input_file(path).resolve()
     with path.open("rb") as file:
         source = tomllib.load(file)
@@ -99,11 +96,11 @@ def read_training_config(path, *, for_weights=False):
         {"data", "generator", "model", "compile", "training", "output"},
         "config",
     )
-    data = _section(
-        source, "data", _parameters(DataGenerator, "datapath") | {"annotations"}
-    )
-    annotations = _path(
-        data.pop("annotations", None), path.parent, "[data].annotations"
+    data = read_data_source(
+        source.get("data", {}),
+        path.parent,
+        custom_generator=custom_generator,
+        custom_generator_args=custom_generator_args,
     )
     generator = _section(
         source, "generator", _parameters(TrainingGenerator, "generator")
@@ -133,7 +130,7 @@ def read_training_config(path, *, for_weights=False):
             if value == "none":
                 model[key] = None
             elif value != "imagenet":
-                model[key] = str(_path(value, path.parent, f"[model].{key}"))
+                model[key] = str(config_path(value, path.parent, f"[model].{key}"))
     compile_options = _section(
         source, "compile", _parameters(keras.Model.compile, "self")
     )
@@ -151,7 +148,7 @@ def read_training_config(path, *, for_weights=False):
     output_section = _section(source, "output", {"checkpoint"})
     output = None
     if not for_weights or "checkpoint" in output_section:
-        output = _path(
+        output = config_path(
             output_section.get("checkpoint"), path.parent, "[output].checkpoint"
         )
     if not for_weights or "batch_size" in fit_options:
@@ -177,7 +174,6 @@ def read_training_config(path, *, for_weights=False):
         raise ValueError("[training].use_multiprocessing must be a boolean")
     return TrainingConfig(
         path,
-        annotations,
         data,
         generator,
         name,
@@ -188,9 +184,7 @@ def read_training_config(path, *, for_weights=False):
     )
 
 
-def _data_and_generator(config, stored=None):
-    annotation_summary(config.annotations, config.data_options.get("dataset", "images"))
-    data = DataGenerator(str(config.annotations), **config.data_options)
+def _training_generator(config, data, stored=None):
     options = {}
     if stored is not None:
         allowed = _parameters(TrainingGenerator, "generator", "augmenter")
@@ -206,14 +200,14 @@ def _data_and_generator(config, stored=None):
     return TrainingGenerator(data, **options)
 
 
-def build_model(config, *, initialize_weights=True):
+def build_model(config, data, *, initialize_weights=True):
     """Build an uncompiled model with the geometry in a training config."""
     options = dict(config.model_options)
     if not initialize_weights:
         parameters = signature(MODELS[config.model_name]).parameters
         for key in {"pretrained_weights", "weights"} & parameters.keys():
             options[key] = None
-    return MODELS[config.model_name](_data_and_generator(config), **options)
+    return MODELS[config.model_name](_training_generator(config, data), **options)
 
 
 def _keras_option(value, namespace):
@@ -336,7 +330,10 @@ class _TrainingBackup(keras.callbacks.BackupAndRestore):
             return False
         with h5py.File(self._completed_path, "r") as weights:
             if weights.attrs.get("deepposekit_training_run") != run_id:
-                return False
+                raise ValueError(
+                    "The completed backup belongs to different inputs or training options. "
+                    "Restore the original inputs or use a new backup directory."
+                )
             owned = json.loads(weights.attrs.get("deepposekit_backup_files", "[]"))
         self._written = {path for path in self.files if path.name in owned}
         self._written.add(self._completed_path)
@@ -401,7 +398,7 @@ def _callback_list(config, selected, overwrite, resources, *, run_id=None):
         for path in (
             config.output,
             config.source,
-            config.annotations,
+            *config.data.inputs,
             *_initial_weight_paths(config),
         )
     }
@@ -422,7 +419,7 @@ def _callback_list(config, selected, overwrite, resources, *, run_id=None):
         for key in ("filepath", "filename", "log_dir", "backup_dir"):
             if key not in options:
                 continue
-            path = _path(options[key], config.source.parent, f"{name}.{key}")
+            path = config_path(options[key], config.source.parent, f"{name}.{key}")
             options[key] = str(path)
             if name == "ModelCheckpoint":
                 # Keras expands placeholders for each actual save.
@@ -496,7 +493,7 @@ def _available_steps(model, fit):
         )
 
 
-def _fine_tune(config, source):
+def _fine_tune(config, data, source):
     metadata = read_checkpoint_metadata(source)
     pose = metadata["pose_model_config"]
     if pose["class_name"] != config.model_name:
@@ -533,48 +530,99 @@ def _fine_tune(config, source):
             "Checkpoint has incomplete skeleton metadata. Use annotations with the original keypoint order.",
             stacklevel=2,
         )
-    generator = _data_and_generator(config, stored)
+    generator = _training_generator(config, data, stored)
     return load_model(source, generator=generator, compile=False)
+
+
+def _input_fingerprint(name, details):
+    fingerprint = (str(name), details.st_dev, details.st_ino)
+    # Staging a checkpoint can update its parent directory.
+    if not S_ISDIR(details.st_mode):
+        fingerprint += (details.st_size, details.st_mtime_ns)
+    return fingerprint
+
+
+def _directory_inputs(source, output):
+    """Visit directory inputs in a deterministic order, including linked files."""
+
+    def raise_walk_error(error):
+        raise error
+
+    visited = set()
+    for folder, directories, names in source.walk(
+        on_error=raise_walk_error, follow_symlinks=True
+    ):
+        details = folder.stat()
+        # Record each alias and its target before pruning repeated traversal.
+        yield _input_fingerprint(folder.relative_to(source), details)
+        identity = (details.st_dev, details.st_ino)
+        if identity in visited:
+            directories.clear()
+            continue
+        visited.add(identity)
+        if folder.resolve() == output.parent:
+            # Model publication owns these staging directories.
+            directories[:] = [
+                name for name in directories if not name.startswith(".deepposekit-")
+            ]
+            names = [name for name in names if name != output.name]
+        directories.sort()
+        for name in sorted(names):
+            path = folder / name
+            try:
+                details = path.stat()
+            except FileNotFoundError:
+                if not path.is_symlink():
+                    raise
+                details = path.lstat()
+            yield _input_fingerprint(path.relative_to(source), details)
 
 
 def _training_run_id(config, selected, output):
     digest = sha256(config.source.read_bytes())
-    inputs = [config.source, config.annotations]
+    inputs = [config.source, *config.data.inputs]
+    if config.data.custom_generator is not None:
+        digest.update(json.dumps(config.data.argv).encode())
     if selected is not None:
         inputs.append(selected)
     elif config.model_name != "StackedDenseNet" or config.model_options.get(
         "pretrained"
     ):
         inputs.extend(_initial_weight_paths(config))
-    identity = []
-    for path in inputs:
-        stat = path.stat()
-        identity.append(
-            (
-                str(path.resolve()),
-                stat.st_dev,
-                stat.st_ino,
-                stat.st_size,
-                stat.st_mtime_ns,
-            )
-        )
+    identity = [_input_fingerprint(path.resolve(), path.stat()) for path in inputs]
     digest.update(json.dumps([str(output.absolute()), identity]).encode())
+    if config.data.path.is_dir():
+        for fingerprint in _directory_inputs(config.data.path, output.resolve()):
+            digest.update(json.dumps(fingerprint).encode())
     return digest.hexdigest()
 
 
 def train(args):
-    config = read_training_config(args.config)
+    config = read_training_config(
+        args.config,
+        custom_generator=args.custom_generator,
+        custom_generator_args=args.custom_generator_args,
+    )
     selected = input_file(args.init_from) if args.init_from is not None else None
-    protected = [config.source, config.annotations, *_initial_weight_paths(config)]
+    protected = [config.source, *config.data.inputs, *_initial_weight_paths(config)]
     if selected is not None:
         protected.append(selected)
     output = output_file(config.output, ".keras", args.overwrite, *protected)
     colored = colors_enabled(sys.stderr, getattr(args, "color", "auto"))
     progress = TrainingProgress(sys.stderr, colored)
+    process_workers = (
+        config.fit_options.get("use_multiprocessing", False)
+        and config.fit_options.get("n_workers", 1) > 0
+    )
     with redirect_stdout(progress), ExitStack() as resources:
         resources.callback(progress.finish)
+        data = resources.enter_context(
+            open_data(config.data, process_workers=process_workers)
+        )
         model = (
-            build_model(config) if selected is None else _fine_tune(config, selected)
+            build_model(config, data)
+            if selected is None
+            else _fine_tune(config, data, selected)
         )
         _available_steps(model, config.fit_options)
         compile_options = {"optimizer": "adam", "loss": "mse"} | config.compile_options
@@ -589,8 +637,13 @@ def train(args):
         model.compile(**compile_options)
         fit = dict(config.fit_options)
         recovered = []
+        run_id = None
         if "callbacks" in fit:
-            run_id = _training_run_id(config, selected, output)
+            if any(
+                name == "BackupAndRestore"
+                for name, _ in named_list(fit["callbacks"], "[training].callbacks")
+            ):
+                run_id = _training_run_id(config, selected, output)
             fit["callbacks"], recovered = _callback_list(
                 config, selected, args.overwrite, resources, run_id=run_id
             )
