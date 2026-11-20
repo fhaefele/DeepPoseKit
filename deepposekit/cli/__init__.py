@@ -438,7 +438,14 @@ def make_parser(
         GENERATOR_ARGS,
         nargs=argparse.REMAINDER,
         metavar="ARG",
-        help="Forward the remaining arguments to the custom generator. Overrides the TOML arguments.",
+        help=(
+            "Forward the remaining arguments to the custom generator. "
+            "Overrides the TOML arguments."
+        ),
+    )
+    train.reference_notes.append(
+        "Configure a custom generator in `[data]` or with `--custom-generator`. "
+        "`--custom-generator-args` replaces the TOML arguments and forwards every remaining token."
     )
     output_options(train)
 
