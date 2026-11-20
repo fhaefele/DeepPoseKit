@@ -714,18 +714,23 @@ class WorkflowTests(unittest.TestCase):
             camera_frame = camera / "frame.png"
             camera_frame.write_bytes(original_preview)
             (samples / "camera").symlink_to(camera, target_is_directory=True)
-            status, _, errors = invoke(
-                "imgaug",
-                "preview",
-                "--config",
-                config,
-                "--output",
+            for destination in (
                 alias / "camera" / camera_frame.name,
-                "--overwrite",
-            )
-            self.assertEqual(status, 1)
-            self.assertIn("Preview output would replace a file", errors)
-            self.assertEqual(camera_frame.read_bytes(), original_preview)
+                alias / "camera" / ".." / camera.name / camera_frame.name,
+            ):
+                with self.subTest(destination=destination):
+                    status, _, errors = invoke(
+                        "imgaug",
+                        "preview",
+                        "--config",
+                        config,
+                        "--output",
+                        destination,
+                        "--overwrite",
+                    )
+                    self.assertEqual(status, 1)
+                    self.assertIn("Preview output would replace a file", errors)
+                    self.assertEqual(camera_frame.read_bytes(), original_preview)
 
             outside_preview = work / "outside-preview.png"
             outside_preview.write_bytes(b"old preview")

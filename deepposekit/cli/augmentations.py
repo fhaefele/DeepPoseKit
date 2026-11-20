@@ -194,11 +194,18 @@ def _preview(args):
             directory = source.path.resolve()
             # Check intermediate ancestors before resolving the final parent.
             # A dataset can reach files outside its root through a directory symlink.
-            through_dataset = any(
-                parent.resolve().is_relative_to(directory)
-                for parent in Path(abspath(target)).parents
+            parent = target.parent.resolve()
+            normalized = Path(abspath(target))
+            spelling = (
+                normalized
+                if normalized.parent.resolve() == parent
+                else target.absolute()
             )
-            target = target.parent.resolve() / target.name
+            through_dataset = any(
+                ancestor.resolve().is_relative_to(directory)
+                for ancestor in spelling.parents
+            )
+            target = parent / target.name
             if through_dataset or target.resolve().is_relative_to(directory):
                 if target.exists() or target.is_symlink():
                     raise ValueError(
