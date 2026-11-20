@@ -578,11 +578,18 @@ def main(
         from deepposekit.cli.examples import EXAMPLES
         from deepposekit.cli.reference import render_help
 
-        # A wrapper can require its own recording arguments for predict.
+        # Wrappers can require their own recording arguments for these commands.
+        overridden = set()
+        if configure_predict is not None:
+            overridden.add(("predict",))
+        if configure_reader is not None:
+            overridden.update(
+                {("dataset", "init"), ("dataset", "append"), ("predictions", "view")}
+            )
         examples = tuple(
-            example
-            for example in EXAMPLES
-            if configure_predict is None or example[1][0] != "predict"
+            (title, argv)
+            for title, argv in EXAMPLES
+            if argv[:1] not in overridden and argv[:2] not in overridden
         )
         sys.stdout.write(
             render_help(
