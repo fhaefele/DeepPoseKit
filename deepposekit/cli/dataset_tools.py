@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import os
+import sys
 import re
 from tempfile import TemporaryDirectory
 
@@ -17,8 +18,10 @@ from deepposekit.cli.operations import annotation_arrays, atomic_output, input_f
 from deepposekit.io.DataGenerator import read_skeleton_names
 
 
-def _open_annotations(file, dataset):
-    images, points, reviewed, skeleton = annotation_arrays(file, dataset)
+def _open_annotations(file, dataset, *, allow_empty=False):
+    images, points, reviewed, skeleton = annotation_arrays(
+        file, dataset, allow_empty=allow_empty
+    )
     arrays = {dataset: images, "annotations": points, "annotated": reviewed}
     for key, array in arrays.items():
         allowed = "biu" if key == "annotated" else "iuf"
@@ -38,16 +41,52 @@ def _open_annotations(file, dataset):
 def _copy_attributes(source, target):
     for attr in source.attrs:
         dtype = source.attrs.get_id(attr).dtype
-        if not _reference_dtype(dtype):
-            target.attrs.create(attr, source.attrs[attr], dtype=dtype)
+        if _reference_dtype(dtype):
+            continue
+        value = source.attrs[attr]
+        string = h5py.check_string_dtype(dtype)
+        if (
+            string is not None
+            and string.length is None
+            and not isinstance(value, h5py.Empty)
+        ):
+            # h5py decodes variable-length attribute strings with surrogateescape.
+            # Write the corresponding bytes back without losing invalid UTF-8.
+            values = np.asarray(value, dtype=object)
+            value = np.empty(values.shape, dtype=object)
+            for index in np.ndindex(values.shape):
+                item = values[index]
+                value[index] = (
+                    item.encode("utf-8", "surrogateescape")
+                    if isinstance(item, str)
+                    else item
+                )
+        target.attrs.create(attr, value, dtype=dtype)
+
+
+def _attribute_values_equal(first, second):
+    if isinstance(first, h5py.Empty) or isinstance(second, h5py.Empty):
+        return isinstance(first, h5py.Empty) and isinstance(second, h5py.Empty)
+    left, right = np.asarray(first), np.asarray(second)
+    if left.shape != right.shape or left.dtype != right.dtype:
+        return False
+    if left.dtype.fields is not None:
+        return all(
+            _attribute_values_equal(left[field], right[field])
+            for field in left.dtype.names
+        )
+    if left.dtype.kind == "O":
+        return all(
+            _attribute_values_equal(a, b)
+            for a, b in zip(left.flat, right.flat, strict=True)
+        )
+    return np.array_equal(left, right, equal_nan=left.dtype.kind in "fc")
 
 
 def _equal_attributes(first, second, attr):
-    left = first.get_id(attr).dtype
-    right = second.get_id(attr).dtype
-    return left == right and np.array_equal(
-        first[attr], second[attr], equal_nan=left.kind in "fc"
-    )
+    left = first.get_id(attr).get_type()
+    right = second.get_id(attr).get_type()
+    return left == right and _attribute_values_equal(first[attr], second[attr])
 
 
 def _keep_matching_attributes(target, source):
@@ -68,11 +107,14 @@ def _create_output(file, template, arrays, metadata, rows):
             maxshape=(None, *array.shape[1:]),
             dtype=array.dtype,
             chunks=True,
+            track_order=True,
         )
         _copy_attributes(array, output)
         destination[key] = output
     for key, array in metadata.items():
-        output = file.create_dataset(key, data=array[:], dtype=array.dtype)
+        output = file.create_dataset(
+            key, data=array[:], dtype=array.dtype, track_order=True
+        )
         _copy_attributes(array, output)
     return destination
 
@@ -94,8 +136,8 @@ def _copy_rows(arrays, destination, ranges, offset=0):
 def _check_compatible(
     template, skeleton, names, file, arrays, source_skeleton, source_names
 ):
-    for key, (shape, dtype) in template.items():
-        if arrays[key].shape[1:] != shape or arrays[key].dtype != dtype:
+    for key, (shape, h5type) in template.items():
+        if arrays[key].shape[1:] != shape or arrays[key].id.get_type() != h5type:
             raise ValueError(
                 f"{file.filename} has incompatible {key} dimensions or dtype"
             )
@@ -119,17 +161,19 @@ def merge(args):
     output = _annotation_output(args.output, args.overwrite, *sources, *dependencies)
     with (
         atomic_output(output, args.overwrite) as temporary,
-        h5py.File(temporary, "w") as result,
+        h5py.File(temporary, "w", track_order=True) as result,
     ):
         size = 0
         for index, source in enumerate(sources):
             with h5py.File(source, "r") as file:
-                arrays, metadata, names = _open_annotations(file, args.dataset)
+                arrays, metadata, names = _open_annotations(
+                    file, args.dataset, allow_empty=True
+                )
                 rows = len(arrays[args.dataset])
                 if index == 0:
                     destination = _create_output(result, file, arrays, metadata, rows)
                     template = {
-                        key: (array.shape[1:], array.dtype)
+                        key: (array.shape[1:], array.id.get_type())
                         for key, array in arrays.items()
                     }
                     skeleton = metadata["skeleton"][:]
@@ -191,27 +235,53 @@ def _partition_ranges(value, count):
 
 def _write_subset(path, file, arrays, metadata, ranges):
     size = sum(stop - start for start, stop in ranges)
-    with h5py.File(path, "x") as result:
+    with h5py.File(path, "x", track_order=True) as result:
         destination = _create_output(result, file, arrays, metadata, size)
         _copy_rows(arrays, destination, ranges)
 
 
 def _publish_directory(stage, output):
+    """Publish the completed directory without making an empty destination visible."""
     if os.name == "nt":
-        # On Windows rename fails if the destination exists.
         stage.rename(output)
         return
-    output.mkdir()
-    reserved = output.stat(follow_symlinks=False)
-    try:
-        stage.replace(output)
-    except BaseException:
-        try:
-            if os.path.samestat(reserved, output.stat(follow_symlinks=False)):
-                output.rmdir()
-        except OSError:
-            pass
-        raise
+
+    import ctypes
+    import errno
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        at_fdcwd = -100
+        rename_noreplace = 1
+        libc.renameat2.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        code = libc.renameat2(
+            at_fdcwd,
+            os.fsencode(stage),
+            at_fdcwd,
+            os.fsencode(output),
+            rename_noreplace,
+        )
+    elif sys.platform == "darwin" and hasattr(libc, "renamex_np"):
+        rename_excl = 4
+        libc.renamex_np.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        code = libc.renamex_np(os.fsencode(stage), os.fsencode(output), rename_excl)
+    else:
+        code = -1
+        ctypes.set_errno(errno.ENOSYS)
+
+    if code != 0:
+        error = ctypes.get_errno()
+        if error in (errno.ENOSYS, errno.ENOTSUP, errno.EINVAL):
+            raise OSError(
+                "This filesystem does not support publishing a new partition directory atomically"
+            )
+        raise OSError(error, os.strerror(error), output)
 
 
 def split(args):

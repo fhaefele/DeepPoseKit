@@ -71,16 +71,21 @@ def atomic_output(path, overwrite):
             os.link(temporary, path)
 
 
-def annotation_arrays(file, dataset):
+def annotation_arrays(file, dataset, *, allow_empty=False):
     names = (dataset, "annotations", "annotated", "skeleton")
     if not all(isinstance(file.get(name), h5py.Dataset) for name in names):
         raise ValueError(
             f"Expected a DeepPoseKit annotation HDF5 file with image key {dataset!r}"
         )
     images, points, labeled, skeleton = (file[name] for name in names)
-    if images.ndim != 4 or min(images.shape, default=0) < 1:
+    if (
+        images.ndim != 4
+        or min(images.shape[1:]) < 1
+        or (not allow_empty and not len(images))
+    ):
+        description = "images" if allow_empty else "nonempty images"
         raise ValueError(
-            "Expected nonempty images shaped (frames, height, width, channels)"
+            f"Expected {description} shaped (frames, height, width, channels)"
         )
     if skeleton.ndim != 2 or skeleton.shape[1] != 2 or not len(skeleton):
         raise ValueError("Expected a nonempty skeleton with parent and swap columns")

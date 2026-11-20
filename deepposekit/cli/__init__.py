@@ -511,11 +511,16 @@ def main(
     index = argv.index(READER_ARGS) if READER_ARGS in argv[:end] else len(argv)
     args, extra = parser.parse_known_args(argv[: index + 1])
     # A variadic positional stops at the first option. Keep accepting input
-    # and output paths separated by flags, as in the original predict syntax.
+    # paths separated by flags for predictions and dataset merges.
+    variadic_paths = None
     if args.command == "predict":
+        variadic_paths = args.paths
+    elif args.command == "dataset" and args.dataset_command == "merge":
+        variadic_paths = args.annotations
+    if variadic_paths is not None:
         stop = extra.index("--") if "--" in extra else len(extra)
         if all(not token.startswith("-") for token in extra[:stop]):
-            args.paths.extend(map(Path, extra[:stop] + extra[stop + 1 :]))
+            variadic_paths.extend(map(Path, extra[:stop] + extra[stop + 1 :]))
             extra = []
     if extra:
         parser.error(f"unrecognized arguments: {' '.join(extra)}")

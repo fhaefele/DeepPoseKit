@@ -900,3 +900,88 @@ class ReviewTools(unittest.TestCase):
             np.testing.assert_array_equal(
                 file["images"][:], np.concatenate((self.images, self.images))
             )
+
+    def test_dataset_merge_preserves_shared_special_hdf5_attributes(self):
+        sources = [self.path / name for name in ("left.h5", "right.h5")]
+        values = np.empty(2, dtype=object)
+        values[0] = np.array([1, 2], dtype=np.int32)
+        values[1] = np.array([3], dtype=np.int32)
+        large = np.arange(40_000, dtype=np.float64)
+        for source in sources:
+            with (
+                h5py.File(self.annotations, "r") as original,
+                h5py.File(source, "w", track_order=True) as file,
+            ):
+                for key in original:
+                    original.copy(key, file)
+                file.attrs["null_float"] = h5py.Empty("f8")
+                file.attrs["raw"] = b"\xff\xc3\xa9"
+                file.attrs.create("ragged", values, dtype=h5py.vlen_dtype("i4"))
+                file.attrs["large"] = large
+        output = self.path / "merged.h5"
+        self.succeeds("dataset", "merge", sources[0], "--output", output, sources[1])
+        with h5py.File(output, "r") as result:
+            self.assertIsInstance(result.attrs["null_float"], h5py.Empty)
+            self.assertEqual(
+                result.attrs["raw"].encode("utf-8", "surrogateescape"), b"\xff\xc3\xa9"
+            )
+            np.testing.assert_array_equal(result.attrs["ragged"][0], [1, 2])
+            np.testing.assert_array_equal(result.attrs["ragged"][1], [3])
+            np.testing.assert_array_equal(result.attrs["large"], large)
+
+    def test_dataset_merge_rejects_enums_with_different_meanings(self):
+        left, right = [self.path / name for name in ("left.h5", "right.h5")]
+        for path, enum in (
+            (left, {"unchecked": 0, "checked": 1}),
+            (right, {"checked": 0, "unchecked": 1}),
+        ):
+            path.write_bytes(self.annotations.read_bytes())
+            with h5py.File(path, "r+") as file:
+                flags = file["annotated"][:].astype(np.uint8)
+                del file["annotated"]
+                file.create_dataset(
+                    "annotated", data=flags, dtype=h5py.enum_dtype(enum, "u1")
+                )
+        output = self.path / "merged.h5"
+        code, _, error = invoke("dataset", "merge", left, right, "--output", output)
+        self.assertEqual(code, 1)
+        self.assertIn("incompatible annotated", error)
+        self.assertFalse(output.exists())
+
+    def test_dataset_merge_accepts_initialized_empty_sources(self):
+        empty = self.path / "empty.h5"
+        initialize_dataset(str(empty), self.images[:0], str(self.skeleton))
+        output = self.path / "merged.h5"
+        self.succeeds(
+            "dataset", "merge", empty, self.annotations, empty, "--output", output
+        )
+        with h5py.File(output, "r") as file:
+            np.testing.assert_array_equal(file["images"][:], self.images)
+        self.succeeds(
+            "dataset", "merge", empty, empty, "--output", output, "--overwrite"
+        )
+        data = DataGenerator(str(output), mode="full")
+        self.assertEqual(len(data), 0)
+
+    def test_dataset_partition_refuses_a_concurrently_created_empty_directory(self):
+        from unittest.mock import patch
+        from deepposekit.cli import dataset_tools
+
+        write = dataset_tools._write_subset
+        parts = self.path / "parts"
+        identity = []
+
+        def compete(path, *args):
+            write(path, *args)
+            if path.name == "part-001.h5":
+                parts.mkdir()
+                identity.append(parts.stat().st_ino)
+
+        with patch.object(dataset_tools, "_write_subset", side_effect=compete):
+            code, _, error = invoke(
+                "dataset", "split", self.annotations, "--at", "2", "--output-dir", parts
+            )
+        self.assertEqual(code, 1)
+        self.assertTrue(error)
+        self.assertEqual(parts.stat().st_ino, identity[0])
+        self.assertEqual(list(parts.iterdir()), [])

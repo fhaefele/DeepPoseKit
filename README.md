@@ -318,7 +318,8 @@ and skeletons must agree, including keypoint names and order when present.
 Split uses zero-based rows in the annotation file. Ranges include the start
 and stop before the end. Row selections preserve the requested order, including
 repeated indices. Each index in `--at` starts a new part. The command
-publishes all numbered files such as `part-001.h5` in a new directory.
+publishes all numbered files such as `part-001.h5` in a new directory on a
+filesystem that supports exclusive directory renaming.
 
 Both commands preserve coordinates, review flags, and skeleton metadata.
 They write standalone DeepPoseKit annotation files. A merge retains ordinary
