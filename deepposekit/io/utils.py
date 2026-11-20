@@ -26,7 +26,8 @@ __all__ = ["initialize_dataset", "initialize_skeleton", "merge_new_images"]
 def initialize_skeleton(skeleton):
     """ Initialize the skeleton from input data.
 
-    Takes in either a .csv or .xlsx file and makes a DataFrame.
+    Load a CSV, Excel file, or DataFrame. Trim surrounding whitespace from
+    keypoint names, parent names, and swap names before resolving indices.
 
     Parameters
     ----------
@@ -54,24 +55,46 @@ def initialize_skeleton(skeleton):
     elif "parent" not in skeleton.columns:
         raise KeyError("skeleton file must contain a `parent` column")
 
+    for column in ("name", "parent", "swap"):
+        if column not in skeleton.columns:
+            continue
+        values = skeleton[column]
+        # Inferred dtype can round integer IDs in mixed columns with missing cells.
+        trimmed = pd.Series(
+            [value.strip() if isinstance(value, str) else value for value in values],
+            index=values.index,
+            dtype=object,
+        )
+        if column == "name":
+            if trimmed.eq("").any():
+                raise ValueError(
+                    "Skeleton names must be nonempty after trimming whitespace"
+                )
+            if trimmed.nunique() < values.nunique():
+                raise ValueError("Skeleton names collide after trimming whitespace")
+        else:
+            trimmed = trimmed.mask(trimmed.eq(""))
+        skeleton[column] = trimmed
+
     if "x" not in skeleton.columns:
         skeleton["x"] = -1
     if "y" not in skeleton.columns:
         skeleton["y"] = -1
 
     if "tree" not in skeleton.columns:
-        skeleton["tree"] = -1
-        for idx, name in enumerate(skeleton["parent"].values):
-            branch = np.where(skeleton["name"] == name)[0]
-            if branch.shape[0] > 0:
-                branch = branch[0]
-                skeleton.loc[idx, "tree"] = branch
+        tree = np.full(len(skeleton), -1)
+        for index, parent in enumerate(skeleton["parent"]):
+            matches = np.flatnonzero(skeleton["name"].eq(parent).fillna(False))
+            if matches.size:
+                tree[index] = matches[0]
+        skeleton["tree"] = tree
     if "swap_index" not in skeleton.columns:
-        skeleton["swap_index"] = -1
-        for idx, name in enumerate(skeleton["name"].values):
-            for jdx, swap_name in enumerate(skeleton["swap"].values):
-                if swap_name == name:
-                    skeleton.loc[idx, "swap_index"] = jdx
+        swap_index = np.full(len(skeleton), -1)
+        for index, name in enumerate(skeleton["name"]):
+            matches = np.flatnonzero(skeleton["swap"].eq(name).fillna(False))
+            if matches.size:
+                swap_index[index] = matches[-1]
+        skeleton["swap_index"] = swap_index
     return skeleton
 
 

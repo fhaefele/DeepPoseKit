@@ -944,7 +944,10 @@ class WorkflowTests(unittest.TestCase):
             writer.close()
         skeleton = self.path / "long-name.csv"
         skeleton.write_text(
-            "name,parent,swap\nhead,,\nleft_antenna_base,head,\nleft_antenna_tip,head,\n"
+            "name,parent,swap\n"
+            " head ,  ,  \n"
+            " left antenna base ,head, left_antenna_tip \n"
+            "left_antenna_tip, head , left antenna base \n"
         )
         destination = self.path / "long-name.h5"
         status, _, errors = invoke(
@@ -962,8 +965,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(status, 0, errors)
         data = DataGenerator(str(destination), mode="full")
         self.assertEqual(
-            data.skeleton_names, ["head", "left_antenna_base", "left_antenna_tip"]
+            data.skeleton_names, ["head", "left antenna base", "left_antenna_tip"]
         )
+        np.testing.assert_array_equal(data.graph, [-1, 0, 0])
+        np.testing.assert_array_equal(data.swap_index, [-1, 2, 1])
         np.testing.assert_array_equal(
             data.get_images(np.arange(len(data))), frames[::3]
         )
