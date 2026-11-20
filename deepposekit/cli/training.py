@@ -8,6 +8,7 @@ from math import isfinite
 import json
 import os
 from pathlib import Path
+from stat import S_ISDIR
 import sys
 import tomllib
 import warnings
@@ -543,16 +544,13 @@ def _training_run_id(config, selected, output):
         inputs.extend(_initial_weight_paths(config))
     identity = []
     for path in inputs:
-        stat = path.stat()
-        identity.append(
-            (
-                str(path.resolve()),
-                stat.st_dev,
-                stat.st_ino,
-                stat.st_size,
-                stat.st_mtime_ns,
-            )
-        )
+        details = path.stat()
+        fingerprint = (str(path.resolve()), details.st_dev, details.st_ino)
+        # Staging or removing a checkpoint can update its parent directory.
+        # Include size and mtime only for input files.
+        if not S_ISDIR(details.st_mode):
+            fingerprint += (details.st_size, details.st_mtime_ns)
+        identity.append(fingerprint)
     digest.update(json.dumps([str(output.absolute()), identity]).encode())
     return digest.hexdigest()
 

@@ -1037,6 +1037,60 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(list(backup.iterdir()), [inactive])
         self.assertEqual(inactive.read_bytes(), b"inactive prior generation")
 
+    def test_custom_generator_recovers_checkpoint_in_source_directory(self):
+        from deepposekit.cli.operations import atomic_output
+        from deepposekit.models.engine import BaseModel
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "samples"
+            source.mkdir()
+            (source / "labels.h5").write_bytes(self.annotations.read_bytes())
+            (root / "loader.py").write_text(
+                "from deepposekit.io import DataGenerator\n"
+                "def create_generator(path, *, argv):\n"
+                "    return DataGenerator(str(path / 'labels.h5'))\n"
+            )
+            config = root / "training.toml"
+            config.write_text(
+                self.config.read_text()
+                .replace(
+                    'annotations = "annotations.h5"',
+                    'source = "samples"\ncustom_generator = "loader.py"',
+                )
+                .replace(
+                    'checkpoint = "model.keras"', 'checkpoint = "samples/model.keras"'
+                )
+                .replace(
+                    '"TerminateOnNaN"', '{name="BackupAndRestore", backup_dir="backup"}'
+                )
+            )
+            checkpoint = source / "model.keras"
+            completed = root / "backup" / "completed.weights.h5"
+
+            def fail_publication(path, *, overwrite):
+                with atomic_output(path, overwrite) as temporary:
+                    temporary.write_bytes(b"staged checkpoint")
+                    raise FileExistsError("concurrent output")
+
+            before_publication = source.stat().st_mtime_ns
+            with patch.object(BaseModel, "save", side_effect=fail_publication):
+                status, _, errors = invoke("train", config)
+            self.assertEqual(status, 1)
+            self.assertIn("concurrent output", errors)
+            self.assertTrue(completed.is_file())
+            self.assertFalse(checkpoint.exists())
+            self.assertNotEqual(source.stat().st_mtime_ns, before_publication)
+
+            with patch.object(
+                BaseModel, "fit", side_effect=AssertionError("unexpected fit")
+            ):
+                status, _, errors = invoke("train", config, "--overwrite")
+            self.assertEqual(status, 0, errors)
+            model = load_model(checkpoint, compile=True)
+            self.assertEqual(int(model.train_model.optimizer.iterations), 1)
+            self.assertFalse(completed.exists())
+
     def test_fine_tune_reuses_normalized_leap_constructor_options(self):
         config = self.path / "leap.toml"
         content = (
