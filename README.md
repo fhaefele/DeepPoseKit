@@ -482,6 +482,20 @@ minimal example. [Fork issue tracker](https://github.com/fhaefele/DeepPoseKit/is
 
 DeepPoseKit was developed by Jake Graving and Daniel Chae. [Upstream repository](https://github.com/jgraving/DeepPoseKit)
 
+### CLI reference and checked examples
+
+After changing the parser or its example arguments, regenerate the reference
+from the checkout root.
+
+```bash
+uv run --locked deepposekit help --format markdown > docs/cli.md
+```
+
+The CPU suite checks the generated file against the parser. The separate CLI
+example step executes the argument vectors shared by the reference and
+`examples/cli_workflow.py`. Add new checked examples to that catalog and
+provide their inputs in the workflow.
+
 ## License
 
 Apache 2.0. [License](LICENSE)
