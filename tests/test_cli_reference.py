@@ -90,6 +90,17 @@ class ReferenceTests(unittest.TestCase):
             capture_output=True,
         )
 
+    def test_positional_help_path_is_optional(self):
+        output = invoke("help", "--format", "json", "help")
+        path = next(
+            argument
+            for argument in json.loads(output)["command"]["arguments"]
+            if argument["name"] == "path"
+        )
+        self.assertEqual(path["nargs"], "*")
+        self.assertFalse(path["required"])
+        self.assertIn("| `path` | No |", invoke("help", "--format", "markdown", "help"))
+
     def test_checked_in_markdown_matches_parser(self):
         reference = Path(__file__).resolve().parents[1] / "docs" / "cli.md"
         self.assertEqual(

@@ -60,12 +60,17 @@ def _argument(action):
     if kind in {"storetrue", "storefalse"}:
         kind = "store_" + kind.removeprefix("store")
         display = "boolean"
+    optional_positional = not action.option_strings and nargs in (
+        argparse.OPTIONAL,
+        argparse.ZERO_OR_MORE,
+        argparse.REMAINDER,
+    )
     result = {
         "name": action.dest,
         "flags": action.option_strings,
         "action": kind,
         "nargs": "remainder" if nargs == argparse.REMAINDER else nargs,
-        "required": action.required,
+        "required": action.required and not optional_positional,
         "description": (action.help or "").replace("%(prog)s", "the command"),
     }
     if nargs != 0 or display == "boolean":

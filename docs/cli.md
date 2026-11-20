@@ -584,7 +584,7 @@ deepposekit help [-h] [--color {auto,always,never}] [--format {text,markdown,jso
 | `-h`, `--help` | No | — | show this help message and exit |
 | `--color` | No | `"auto"` | Terminal colors (default: auto). Values `auto`, `always`, `never`. |
 | `--format` | No | `"text"` | Reference output format (default: text). Values `text`, `markdown`, `json`. |
-| `path` | Yes | — | Optional command and subcommand names. |
+| `path` | No | — | Optional command and subcommand names. |
 
 
 Print the installed dataset split contract as JSON.
