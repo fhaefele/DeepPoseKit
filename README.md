@@ -305,6 +305,27 @@ frames from across clusters. `--frame-step` sets the candidate stride.
 `--count` sets the number of frames saved, and `--seed` makes the selection
 repeatable.
 
+### Combine or split annotation datasets
+
+```bash
+deepposekit dataset merge session-a.h5 session-b.h5 session-c.h5 --output combined.h5
+deepposekit dataset split combined.h5 --frames '0:100,150,200:250' --output subset.h5
+deepposekit dataset split combined.h5 --at 100,250 --output-dir parts/
+```
+
+Merge combines files in the order listed. The image shapes, array dtypes,
+and skeletons must agree, including keypoint names and order when present.
+Split uses zero-based rows in the annotation file. Ranges include the start
+and stop before the end. Row selections preserve the requested order, including
+repeated indices. Each index in `--at` starts a new part. The command
+publishes all numbered files such as `part-001.h5` in a new directory.
+
+Both commands preserve coordinates, review flags, and skeleton metadata.
+They write standalone DeepPoseKit annotation files. A merge retains ordinary
+attributes shared by all sources and a split retains ordinary attributes from
+its input. Use `--dataset` if the image key differs from `images`.
+Use `--overwrite` to replace a single output file.
+
 ### Help, completion, and environment
 
 Run `deepposekit train --help` for command-specific flags and

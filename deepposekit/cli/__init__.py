@@ -218,6 +218,54 @@ def make_parser(
     batch_option(prelabel)
     output_options(prelabel)
 
+    merge = dataset_commands.add_parser(
+        "merge", help="Combine compatible annotation files in input order."
+    )
+    _path(
+        merge,
+        "annotations",
+        "h5",
+        "hdf5",
+        nargs="+",
+        metavar="ANNOTATIONS",
+        help="Annotation files in the order to combine.",
+    )
+    _path(
+        merge,
+        "--output",
+        "h5",
+        "hdf5",
+        required=True,
+        help="Combined annotation HDF5 file.",
+    )
+    merge.add_argument(
+        "--dataset", default="images", help="Image dataset key (default: images)."
+    )
+    output_options(merge)
+
+    split = dataset_commands.add_parser(
+        "split", help="Extract frames or partition an annotation file."
+    )
+    _path(
+        split, "annotations", "h5", "hdf5", help="An initialized annotation HDF5 file."
+    )
+    selects = split.add_mutually_exclusive_group(required=True)
+    selects.add_argument(
+        "--frames", help="Zero-based indices and end-exclusive ranges, e.g. 0:100,150."
+    )
+    selects.add_argument(
+        "--at", help="Comma-separated indices of the first row in each new part."
+    )
+    outputs = split.add_mutually_exclusive_group(required=True)
+    _path(outputs, "--output", "h5", "hdf5", help="Annotation HDF5 file for --frames.")
+    _path(
+        outputs, "--output-dir", help="New directory for numbered --at parts."
+    ).completer = DirectoriesCompleter()
+    split.add_argument(
+        "--dataset", default="images", help="Image dataset key (default: images)."
+    )
+    output_options(split)
+
     image_tools = command(
         "imgaug", "Data and inspection", "Discover and preview training augmentations."
     )

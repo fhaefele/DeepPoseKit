@@ -726,3 +726,177 @@ class ReviewTools(unittest.TestCase):
         self.assertEqual(output.read_bytes(), b"prior output")
         with h5py.File(self.annotations, "r") as file:
             np.testing.assert_array_equal(file["virtual_metrics"][:], [21, 42])
+
+    def test_dataset_split_extracts_rows_in_order_with_labels(self):
+        output = self.path / "subset.hdf5"
+        self.succeeds(
+            "dataset",
+            "split",
+            self.annotations,
+            "--frames",
+            "5, 1:3, 5",
+            "--output",
+            output,
+        )
+        with (
+            h5py.File(output, "r") as result,
+            h5py.File(self.annotations, "r") as original,
+        ):
+            for key in ("images", "annotations", "annotated"):
+                np.testing.assert_array_equal(
+                    result[key][:], original[key][:][[5, 1, 2, 5]]
+                )
+                self.assertIsNone(result[key].maxshape[0])
+            np.testing.assert_array_equal(
+                result["skeleton"][:], original["skeleton"][:]
+            )
+            np.testing.assert_array_equal(
+                result["skeleton_names"][:], original["skeleton_names"][:]
+            )
+            self.assertEqual(result.attrs["lab"], "fixture")
+
+    def test_dataset_partition_and_merge_round_trip_custom_key_and_metadata(self):
+        with h5py.File(self.annotations, "r+") as file:
+            file.move("images", "camera2")
+            file["camera2"].attrs["units"] = "pixels"
+        parts = self.path / "parts"
+        out = self.succeeds(
+            "dataset",
+            "split",
+            self.annotations,
+            "--dataset",
+            "camera2",
+            "--at",
+            "2,5",
+            "--output-dir",
+            parts,
+        )
+        sources = [parts / f"part-{number:03d}.h5" for number in (1, 2, 3)]
+        self.assertEqual(out.splitlines(), list(map(str, sources)))
+        with h5py.File(sources[1], "r+") as file:
+            self.assertEqual(file.attrs["lab"], "fixture")
+            file.attrs["lab"] = "different"
+        output = self.path / "merged.hdf5"
+        self.succeeds(
+            "dataset",
+            "merge",
+            sources[2],
+            sources[0],
+            sources[1],
+            "--output",
+            output,
+            "--dataset",
+            "camera2",
+        )
+        with (
+            h5py.File(output, "r") as result,
+            h5py.File(self.annotations, "r") as original,
+        ):
+            order = [5, 6, 7, 0, 1, 2, 3, 4]
+            self.assertEqual(result["camera2"].attrs["units"], "pixels")
+            self.assertNotIn("lab", result.attrs)
+            for key in ("camera2", "annotations", "annotated"):
+                np.testing.assert_array_equal(result[key][:], original[key][:][order])
+
+    def test_dataset_merge_rejects_incompatible_skeleton_and_keeps_prior_output(self):
+        other = self.path / "other.h5"
+        other.write_bytes(self.annotations.read_bytes())
+        with h5py.File(other, "r+") as file:
+            file["skeleton_names"][:] = [b"right", b"left"]
+        output = self.path / "merged.h5"
+        output.write_bytes(b"prior result")
+        for change in ("names", "missing", "dtype"):
+            if change != "names":
+                with h5py.File(other, "r+") as file:
+                    if change == "missing":
+                        del file["skeleton_names"]
+                    else:
+                        images = file["images"][:]
+                        del file["images"]
+                        file["images"] = images.astype(np.uint16)
+            code, _, error = invoke(
+                "dataset",
+                "merge",
+                self.annotations,
+                other,
+                "--output",
+                output,
+                "--overwrite",
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("dtype" if change == "dtype" else "skeleton names", error)
+            self.assertEqual(output.read_bytes(), b"prior result")
+
+    def test_dataset_split_validates_boundaries_and_publishes_all_parts(self):
+        from unittest.mock import patch
+        from deepposekit.cli import dataset_tools
+
+        output = self.path / "invalid.h5"
+        parts = self.path / "parts"
+        for select in ("3:3", "8", "2:", "1,,5"):
+            code, _, _ = invoke(
+                "dataset",
+                "split",
+                self.annotations,
+                "--frames",
+                select,
+                "--output",
+                output,
+            )
+            self.assertEqual(code, 1)
+            self.assertFalse(output.exists())
+        for points in ("0", "8", "2,2", "3,2", "4,"):
+            code, _, _ = invoke(
+                "dataset",
+                "split",
+                self.annotations,
+                "--at",
+                points,
+                "--output-dir",
+                parts,
+            )
+            self.assertEqual(code, 1)
+            self.assertFalse(parts.exists())
+        write = dataset_tools._write_subset
+
+        def fail_later(path, *args):
+            if path.name == "part-002.h5":
+                raise OSError("write failed")
+            return write(path, *args)
+
+        with patch.object(dataset_tools, "_write_subset", side_effect=fail_later):
+            code, _, error = invoke(
+                "dataset", "split", self.annotations, "--at", "2", "--output-dir", parts
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("write failed", error)
+        self.assertFalse(parts.exists())
+
+    def test_dataset_merge_protects_external_backing_files(self):
+        linked = self.path / "linked.h5"
+        linked.write_bytes(self.annotations.read_bytes())
+        backing = self.path / "backing.h5"
+        with h5py.File(linked, "r+") as file, h5py.File(backing, "w") as external:
+            file.copy("images", external)
+            del file["images"]
+            file["images"] = h5py.ExternalLink(backing.name, "/images")
+        protected = backing.read_bytes()
+        code, _, error = invoke(
+            "dataset",
+            "merge",
+            linked,
+            self.annotations,
+            "--output",
+            backing,
+            "--overwrite",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("would replace an input", error)
+        self.assertEqual(backing.read_bytes(), protected)
+        output = self.path / "portable.h5"
+        self.succeeds("dataset", "merge", linked, self.annotations, "--output", output)
+        with h5py.File(output, "r") as file:
+            self.assertIsInstance(file.get("images", getlink=True), h5py.HardLink)
+            np.testing.assert_array_equal(
+                file["images"][:], np.concatenate((self.images, self.images))
+            )
