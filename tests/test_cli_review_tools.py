@@ -9,6 +9,7 @@ import unittest
 import cv2
 import h5py
 import numpy as np
+import pandas as pd
 
 from deepposekit.cli import main
 from deepposekit.cli.augmentations import build_augmenters
@@ -17,6 +18,7 @@ from deepposekit.io import (
     TrainingGenerator,
     VideoWriter,
     initialize_dataset,
+    initialize_skeleton,
 )
 from deepposekit.models import LEAP
 
@@ -26,6 +28,36 @@ def invoke(*args):
     with redirect_stdout(out), redirect_stderr(err):
         code = main([str(value) for value in args])
     return code, out.getvalue(), err.getvalue()
+
+
+class SkeletonLoadingTests(unittest.TestCase):
+    def test_dataframe_refs_keep_missing_values_and_use_row_positions(self):
+        skeleton = pd.DataFrame(
+            {
+                "name": [" head ", " left foot ", "right foot"],
+                "parent": [pd.NA, "head", " head "],
+                "swap": [" ", " right foot", "left foot "],
+            },
+            index=[10, 20, 30],
+            dtype="string",
+        )
+        result = initialize_skeleton(skeleton)
+        self.assertEqual(list(result.index), [10, 20, 30])
+        self.assertEqual(list(result["name"]), ["head", "left foot", "right foot"])
+        self.assertEqual(list(result["tree"]), [-1, 0, 0])
+        self.assertEqual(list(result["swap_index"]), [-1, 2, 1])
+
+    def test_rejects_empty_or_colliding_trimmed_names(self):
+        for names, message in (
+            (["head", " "], "nonempty"),
+            (["head", " head "], "collide"),
+        ):
+            with self.subTest(names=names):
+                skeleton = pd.DataFrame(
+                    {"name": names, "parent": [None, "head"], "swap": [None, None]}
+                )
+                with self.assertRaisesRegex(ValueError, message):
+                    initialize_skeleton(skeleton)
 
 
 class ReviewTools(unittest.TestCase):
