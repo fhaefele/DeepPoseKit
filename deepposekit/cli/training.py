@@ -14,6 +14,7 @@ import tomllib
 import warnings
 
 import h5py
+import imgaug
 import keras
 import numpy as np
 
@@ -36,6 +37,10 @@ from deepposekit.models import (
     StackedHourglass,
     load_model,
 )
+from deepposekit.models._checkpoint import (
+    TRAINING_CONFIG_ENTRY,
+    TRAINING_SETTINGS_ENTRY,
+)
 from deepposekit.models.loading import read_checkpoint_metadata
 from deepposekit.utils.image import resolve_n_transitions
 
@@ -48,12 +53,14 @@ MODELS = {
 @dataclass(frozen=True)
 class TrainingConfig:
     source: Path
+    toml: bytes
     data: DataSource
     generator_options: dict
     model_name: str
     model_options: dict
     compile_options: dict
     fit_options: dict
+    random_seed: int | None
     output: Path | None
 
 
@@ -89,8 +96,8 @@ def read_training_config(
     path, *, for_weights=False, custom_generator=None, custom_generator_args=None
 ):
     path = input_file(path).resolve()
-    with path.open("rb") as file:
-        source = tomllib.load(file)
+    toml = path.read_bytes()
+    source = tomllib.loads(toml.decode("utf-8"))
     _validate_keys(
         source,
         {"data", "generator", "model", "compile", "training", "output"},
@@ -144,7 +151,12 @@ def read_training_config(
         "validation_split",
         "sample_weight",
     )
-    fit_options = _section(source, "training", fit_keys)
+    fit_options = _section(source, "training", fit_keys | {"random_seed"})
+    random_seed = fit_options.pop("random_seed", None)
+    if random_seed is not None:
+        _integer(random_seed, 0, "[training].random_seed")
+        if random_seed >= 2**32:
+            raise ValueError("[training].random_seed must be < 2**32")
     output_section = _section(source, "output", {"checkpoint"})
     output = None
     if not for_weights or "checkpoint" in output_section:
@@ -174,12 +186,14 @@ def read_training_config(
         raise ValueError("[training].use_multiprocessing must be a boolean")
     return TrainingConfig(
         path,
+        toml,
         data,
         generator,
         name,
         model,
         compile_options,
         fit_options,
+        random_seed,
         output,
     )
 
@@ -259,10 +273,11 @@ def _check_callback_path(path, reserved, *, directory=False):
 class _TrainingCheckpoint(callbacks.ModelCheckpoint):
     """Apply CLI output protection to each expanded checkpoint destination."""
 
-    def __init__(self, *, reserved, overwrite, **options):
+    def __init__(self, *, reserved, overwrite, record=None, **options):
         super().__init__(**options)
         self.reserved = reserved
         self.overwrite = overwrite
+        self.record = record
         self.saved = set()
 
     def _save_model(self, epoch, batch, logs):
@@ -277,6 +292,8 @@ class _TrainingCheckpoint(callbacks.ModelCheckpoint):
                 with atomic_output(path, overwrite) as temporary:
                     self.model.train_model.save_weights(temporary)
             else:
+                if self.record is not None:
+                    self.record.attach(self.model, epoch=epoch + 1)
                 self.model.save(path, overwrite=overwrite)
         except FileExistsError as error:
             raise FileExistsError(
@@ -313,13 +330,16 @@ class _TrainingBackup(keras.callbacks.BackupAndRestore):
         for generation in self._generations:
             yield from generation
 
-    def store_completed(self, training_model, run_id):
+    def store_completed(self, training_model, run_id, settings):
         owned = self._written | {self._completed_path}
         self._completed_path.parent.mkdir(parents=True, exist_ok=True)
         with atomic_output(self._completed_path, overwrite=True) as temporary:
             training_model.save_weights(temporary)
             with h5py.File(temporary, "r+") as weights:
                 weights.attrs["deepposekit_training_run"] = run_id
+                weights.attrs["deepposekit_training_settings"] = settings.decode(
+                    "utf-8"
+                )
                 weights.attrs["deepposekit_backup_files"] = json.dumps(
                     sorted(path.name for path in owned)
                 )
@@ -344,6 +364,8 @@ class _TrainingBackup(keras.callbacks.BackupAndRestore):
         if optimizer is not None and not optimizer.built:
             optimizer.build(training_model.trainable_variables)
         training_model.load_weights(self._completed_path)
+        with h5py.File(self._completed_path) as weights:
+            return weights.attrs.get("deepposekit_training_settings")
 
     def _save_model(self):
         written = [current for current, _ in self._generations]
@@ -392,7 +414,12 @@ def _reserve_callback_path(path, directory, resources):
         resources.callback(_discard_empty_file, path, created)
 
 
-def _callback_list(config, selected, overwrite, resources, *, run_id=None):
+def _callback_type(name):
+    namespace = callbacks if name in {"Logger", "ModelCheckpoint"} else keras.callbacks
+    return builtin_class(namespace, name, keras.callbacks.Callback)
+
+
+def _callback_list(config, selected, overwrite, resources, *, run_id=None, record=None):
     protected = {
         path.resolve()
         for path in (
@@ -410,10 +437,7 @@ def _callback_list(config, selected, overwrite, resources, *, run_id=None):
     for name, options in named_list(
         config.fit_options.get("callbacks", []), "[training].callbacks"
     ):
-        namespace = (
-            callbacks if name in {"Logger", "ModelCheckpoint"} else keras.callbacks
-        )
-        callback_type = builtin_class(namespace, name, keras.callbacks.Callback)
+        callback_type = _callback_type(name)
         if name == "TensorBoard":
             options.setdefault("log_dir", "logs")
         for key in ("filepath", "filename", "log_dir", "backup_dir"):
@@ -433,6 +457,12 @@ def _callback_list(config, selected, overwrite, resources, *, run_id=None):
             reserved.add(resolved)
             destinations.append((path, directory))
         specs.append((name, callback_type, options))
+
+    if record is not None:
+        record.settings["training"]["callbacks"] = [
+            _defaults(callback_type) | options | {"name": name}
+            for name, callback_type, options in specs
+        ]
 
     if not overwrite:
         for path, directory in destinations:
@@ -467,7 +497,7 @@ def _callback_list(config, selected, overwrite, resources, *, run_id=None):
             callback = backups[index]
         elif name == "ModelCheckpoint":
             callback = _TrainingCheckpoint(
-                reserved=reserved, overwrite=overwrite, **options
+                reserved=reserved, overwrite=overwrite, record=record, **options
             )
         else:
             callback = callback_type(**options)
@@ -491,6 +521,93 @@ def _available_steps(model, fit):
         raise ValueError(
             "validation_steps exceeds the number of available validation batches"
         )
+
+    return fit.get("steps_per_epoch", train_steps), fit.get(
+        "validation_steps", validation_steps
+    )
+
+
+def _defaults(constructor):
+    return {
+        key: value.default
+        for key, value in signature(constructor).parameters.items()
+        if key != "self" and value.default is not Parameter.empty
+    }
+
+
+def _initialization(model, selected):
+    if selected is not None:
+        return {"kind": "checkpoint", "path": str(selected.resolve())}
+    weights = getattr(model, "weights", None)
+    if isinstance(model, StackedDenseNet) and model.pretrained:
+        weights = model.pretrained_weights
+    if weights is None:
+        return {"kind": "random"}
+    if weights == "imagenet":
+        return {"kind": "imagenet"}
+    return {"kind": "weights_file", "path": str(Path(weights).resolve())}
+
+
+def _learning_rate(network):
+    return float(keras.ops.convert_to_numpy(network.optimizer.learning_rate))
+
+
+class _TrainingRecord(keras.callbacks.Callback):
+    """Record resolved settings and epoch-end rates for full checkpoints."""
+
+    def __init__(self, config, model, selected, steps):
+        super().__init__()
+        self.toml = config.toml
+        data = config.data
+        generator = model.train_generator
+        training = _defaults(model.fit) | config.fit_options
+        training["steps_per_epoch"], training["validation_steps"] = steps
+        training["callbacks"] = []
+        if data.custom_generator is None:
+            loader = {"dataset": "images", "mode": "annotated"} | data.options
+        else:
+            loader = {
+                "custom_generator": str(data.custom_generator.resolve()),
+                "custom_generator_args": data.argv,
+            }
+        self.settings = {
+            "schema_version": 1,
+            "config_path": str(config.source),
+            "data": {
+                "path": str(data.path.resolve()),
+                **loader,
+                "preprocessing": data.preprocessing,
+            },
+            "initialization": _initialization(model, selected),
+            "random_seeds": {
+                "training": config.random_seed,
+                "generator": generator.random_seed,
+            },
+            "augmenter": config.generator_options.get("augmenter", []),
+            "compile": model.train_model.get_compile_config(),
+            "initial_learning_rate": _learning_rate(model.train_model),
+            "training": training,
+            "observed_epoch_end_learning_rates": [],
+        }
+
+    def on_epoch_end(self, epoch, logs=None):
+        self.settings["observed_epoch_end_learning_rates"].append(
+            {"epoch": epoch + 1, "learning_rate": _learning_rate(self.model)}
+        )
+
+    def attach(self, model, *, epoch=None):
+        checkpoint = {"learning_rate": _learning_rate(model.train_model)}
+        if epoch is not None:
+            checkpoint["epoch"] = epoch
+        model._training_files = {
+            TRAINING_CONFIG_ENTRY: self.toml,
+            TRAINING_SETTINGS_ENTRY: (
+                json.dumps(
+                    self.settings | {"checkpoint": checkpoint}, indent=2, default=str
+                )
+                + "\n"
+            ).encode("utf-8"),
+        }
 
 
 def _fine_tune(config, data, source):
@@ -579,7 +696,7 @@ def _directory_inputs(source, output):
 
 
 def _training_run_id(config, selected, output):
-    digest = sha256(config.source.read_bytes())
+    digest = sha256(config.toml)
     inputs = [config.source, *config.data.inputs]
     if config.data.custom_generator is not None:
         digest.update(json.dumps(config.data.argv).encode())
@@ -616,6 +733,9 @@ def train(args):
     )
     with redirect_stdout(progress), ExitStack() as resources:
         resources.callback(progress.finish)
+        if config.random_seed is not None:
+            keras.utils.set_random_seed(config.random_seed)
+            imgaug.seed(config.random_seed)
         data = resources.enter_context(
             open_data(config.data, process_workers=process_workers)
         )
@@ -624,7 +744,7 @@ def train(args):
             if selected is None
             else _fine_tune(config, data, selected)
         )
-        _available_steps(model, config.fit_options)
+        steps = _available_steps(model, config.fit_options)
         compile_options = {"optimizer": "adam", "loss": "mse"} | config.compile_options
         for key, namespace in (
             ("optimizer", keras.optimizers),
@@ -635,6 +755,7 @@ def train(args):
             if key in compile_options:
                 compile_options[key] = _keras_option(compile_options[key], namespace)
         model.compile(**compile_options)
+        record = _TrainingRecord(config, model, selected, steps)
         fit = dict(config.fit_options)
         recovered = []
         run_id = None
@@ -645,7 +766,12 @@ def train(args):
             ):
                 run_id = _training_run_id(config, selected, output)
             fit["callbacks"], recovered = _callback_list(
-                config, selected, args.overwrite, resources, run_id=run_id
+                config,
+                selected,
+                args.overwrite,
+                resources,
+                run_id=run_id,
+                record=record,
             )
         backups = recovered or [
             callback
@@ -653,14 +779,23 @@ def train(args):
             if isinstance(callback, _TrainingBackup)
         ]
         if recovered:
-            recovered[0].restore_completed(model.train_model)
+            settings = recovered[0].restore_completed(model.train_model)
+            if settings is not None:
+                record.settings = json.loads(settings)
         else:
+            fit["callbacks"] = [*fit.get("callbacks", ()), record]
             history = model.fit(**fit)
             loss = history.history.get("loss", [])
             if not len(loss) or not np.isfinite(loss).all():
                 raise ValueError("Training did not produce a finite loss")
+        record.attach(model)
+        if not recovered:
             for backup in backups:
-                backup.store_completed(model.train_model, run_id)
+                backup.store_completed(
+                    model.train_model,
+                    run_id,
+                    model._training_files[TRAINING_SETTINGS_ENTRY],
+                )
         model.save(output, overwrite=args.overwrite)
         for backup in backups:
             backup.finalize()

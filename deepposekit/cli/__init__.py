@@ -418,6 +418,18 @@ def make_parser(
         "--dataset", default="images", help="Image dataset key (default: images)."
     )
 
+    training_record = inspect.add_mutually_exclusive_group()
+    training_record.add_argument(
+        "--training-config",
+        action="store_true",
+        help="Extract the embedded training TOML.",
+    )
+    training_record.add_argument(
+        "--training-settings",
+        action="store_true",
+        help="Extract recorded training settings as JSON.",
+    )
+
     train = command("train", "Model workflow", "Train or fine-tune from a TOML config.")
     _path(train, "config", "toml", help="Training configuration file.")
     _path(

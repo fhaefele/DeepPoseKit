@@ -16,6 +16,7 @@ class DataSource:
     options: dict
     custom_generator: Path | None
     argv: tuple[str, ...]
+    preprocessing: str | None
 
     @property
     def inputs(self):
@@ -39,6 +40,9 @@ def read_data_source(
     annotation_path = options.pop("annotations", None)
     module = options.pop("custom_generator", None)
     argv = options.pop("custom_generator_args", None)
+    preprocessing = options.pop("preprocessing", None)
+    if preprocessing is not None and not isinstance(preprocessing, str):
+        raise ValueError("[data].preprocessing must be a description string")
     unknown = set(options) - {"dataset", "mode"}
     if unknown:
         raise ValueError(f"Unknown [data] option(s): {', '.join(sorted(unknown))}")
@@ -67,7 +71,9 @@ def read_data_source(
             )
         else:
             path = config_path(source, directory, "[data].source")
-        return DataSource(path, options, custom_generator, tuple(argv or ()))
+        return DataSource(
+            path, options, custom_generator, tuple(argv or ()), preprocessing
+        )
 
     if source is not None or argv is not None:
         raise ValueError(
@@ -80,7 +86,7 @@ def read_data_source(
         raise ValueError("[data].dataset must be a nonempty string")
     if options.get("mode", "annotated") not in ("full", "annotated", "unannotated"):
         raise ValueError("[data].mode must be full, annotated, or unannotated")
-    return DataSource(annotations, options, None, ())
+    return DataSource(annotations, options, None, (), preprocessing)
 
 
 @contextmanager

@@ -75,6 +75,8 @@ def save_model(model, path, optimizer=True, overwrite=True):
                 archive.writestr(
                     METADATA_ENTRY, json.dumps(metadata, default=get_json_type)
                 )
+                for name, contents in getattr(model, "_training_files", {}).items():
+                    archive.writestr(name, contents)
         else:
             with h5py.File(temporary_path, "r+") as checkpoint:
                 for name, config in metadata.items():

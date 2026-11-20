@@ -8,6 +8,9 @@ import keras
 import numpy as np
 
 METADATA_ENTRY = "deepposekit.json"
+TRAINING_CONFIG_ENTRY = "training.toml"
+TRAINING_SETTINGS_ENTRY = "training-run.json"
+TRAINING_ENTRIES = (TRAINING_CONFIG_ENTRY, TRAINING_SETTINGS_ENTRY)
 METADATA_FIELDS = ("pose_model_config", "train_generator_config")
 HDF5_SUFFIXES = (".h5", ".hdf5")
 
