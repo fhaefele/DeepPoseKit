@@ -146,27 +146,6 @@ DeepPoseKit's `FlipAxis`. Callbacks use Keras classes and DeepPoseKit's
 Commands that create an output require `--overwrite` to replace it.
 Checkpoint callback paths may use Keras placeholders such as `{epoch}`.
 
-The CLI embeds the original TOML and a JSON training record in its final and
-full `.keras` callback checkpoints. The record includes the initialization
-source, configured seeds, ordered augmentation, data loader and its arguments,
-batch sizes, learning rates, and scheduler and checkpoint settings. It stores
-the dataset path and selection. Use `[data].preprocessing` to describe
-preprocessing applied outside the model, including steps used to prepare the
-HDF5 or implemented in a custom loader. The annotation data stays in its
-source file.
-
-```bash
-deepposekit inspect fly.keras --training-config > recovered.toml
-deepposekit inspect fly.keras --training-settings > training-run.json
-```
-
-Put the recovered TOML beside the original config or update its relative
-paths. Choose a new output checkpoint and reapply any recorded command-line
-overrides, such as `--init-from` or custom generator arguments, before running
-`deepposekit train recovered.toml`. Epoch-end learning rates record observations
-from the active training process. A run resumed after an interruption may
-contain observations starting at the resumed epoch.
-
 Use a dedicated directory for `BackupAndRestore`. If training finishes and
 the final checkpoint cannot be written, retry the same command with
 `--overwrite` to publish the saved training state. When cleanup is enabled,
@@ -181,6 +160,58 @@ check the original keypoint order and skeleton before fine-tuning.
 ```bash
 deepposekit train fine-tune.toml --init-from best_model_densenet.h5
 ```
+
+### Rerun training from a checkpoint recipe
+
+`train` embeds the exact input TOML and a JSON run record in its final
+`.keras` checkpoint and in full `.keras` checkpoints saved by
+`ModelCheckpoint`. The annotation data stays in its source file.
+
+1. Extract both records from the checkpoint you want to reproduce.
+
+   ```bash
+   deepposekit inspect fly.keras --training-config > recovered.toml
+   deepposekit inspect fly.keras --training-settings > training-run.json
+   ```
+
+   `train` takes the recovered TOML as its positional argument. Use the JSON
+   as a reference for the resolved inputs and any command-line overrides.
+   Both extraction flags belong to `inspect`.
+
+2. Check the inputs and choose new output paths. The JSON's `config_path`
+   is the original TOML path. Put `recovered.toml` beside it or update its
+   relative paths. Use `data.path` to locate the annotations or custom loader
+   source, and keep the original dataset selection and preprocessing. A
+   recorded `data.preprocessing` describes how the source images were
+   prepared or loaded. Update `[output].checkpoint` and any checkpoint, log,
+   or backup paths in `[training].callbacks` for the rerun.
+
+3. Run training with the recovered TOML.
+
+   ```bash
+   deepposekit train recovered.toml
+   ```
+
+   If the original run fine-tuned a checkpoint, pass the path from
+   `initialization.path` as `--init-from`. This is the original starting
+   checkpoint. The `.keras` file you extracted from is the output of
+   that run. For ImageNet or a weights file, use the initialization settings
+   in `[model]` and update the weights path if it moved.
+
+   If the original run overrode a custom generator from the command line,
+   reapply `data.custom_generator` and the tokens in
+   `data.custom_generator_args`. Put `--custom-generator-args` last. For
+   example, a rerun with both a starting checkpoint and loader overrides is
+
+   ```bash
+   deepposekit train recovered.toml --init-from original-start.keras \
+     --custom-generator my_generator.py --custom-generator-args --split new-labels
+   ```
+
+The recovered TOML keeps the configured seeds, augmentation order, batch
+sizes, and scheduler and stopping rules. The JSON also records the observed
+epoch-end learning rates. After a restart, those observations may begin at
+the resumed epoch.
 
 ### Train from a custom labeled dataset
 
