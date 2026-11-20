@@ -4,9 +4,27 @@
 
 # DeepPoseKit
 
-DeepPoseKit trains models for 2D pose estimation of user-defined keypoints and
-runs them on images or video. This fork uses Python 3.12, TensorFlow 2.21,
-Keras 3, and a locked uv environment. [Original DeepPoseKit paper](https://doi.org/10.7554/eLife.47994)
+DeepPoseKit trains models to track user-defined 2D keypoints in images and video.
+This fork updates the original project's runtime and adds a CLI for working
+with models, videos, and annotation datasets.
+[Original DeepPoseKit](https://github.com/jgraving/DeepPoseKit) · [DeepPoseKit paper](https://doi.org/10.7554/eLife.47994)
+
+## Changes in this fork
+
+- **Updated runtime.** Use Python 3.12, TensorFlow 2.21, and Keras 3 with
+  locked uv installs and optional NVIDIA GPU support on Linux and WSL2.
+  [Installation](#installation)
+- **Legacy model migration.** Load supported legacy HDF5 checkpoints,
+  convert them to `.keras`, or fine-tune them with a fresh optimizer.
+  Import standalone legacy StackedDenseNet weights with a matching model configuration.
+  [Checkpoint migration](#import-a-full-checkpoint-and-predict) · [StackedDenseNet weights](#import-legacy-stackeddensenet-weights)
+- **Training and batch prediction from the CLI.** Train from TOML, evaluate
+  saved models, and predict across videos or directories with built-in or
+  custom readers. [Command line](#command-line)
+- **Dataset preparation and prediction review.** Preview training augmentations,
+  inspect video overlays and keypoint traces, sample and prelabel frames, and
+  merge or split annotation datasets. Use an external annotator for interactive labeling.
+  [Prediction review](#review-and-refine-predictions)
 
 ## Installation
 
@@ -586,10 +604,3 @@ If you use the [imgaug package](https://github.com/aleju/imgaug) for data augmen
 If you [use data](https://github.com/jgraving/DeepPoseKit#i-already-have-annotated-data) that was annotated with the DeepLabCut package (http://deeplabcut.org) for your research, be sure to [cite it](https://github.com/AlexEMG/DeepLabCut/blob/master/README.md#references).
 
 Please also consider citing the relevant references for the pose estimation model(s) used in your research, which can be found in the documentation (i.e., [`StackedDenseNet`](http://jakegraving.com/DeepPoseKit/html/deepposekit/models/StackedDenseNet.html#references), [`StackedHourglass`](http://jakegraving.com/DeepPoseKit/html/deepposekit/models/StackedHourglass.html#references), [`DeepLabCut`](http://jakegraving.com/DeepPoseKit/html/deepposekit/models/DeepLabCut.html#references), [`LEAP`](http://jakegraving.com/DeepPoseKit/html/deepposekit/models/LEAP.html#references)).
-
-# News
-- **October 2019:** Our paper describing DeepPoseKit is published at eLife! (http://paper.deepposekit.org)
-- **September 2019**: 
-    - Nature News covers DeepPoseKit: [Deep learning powers a motion-tracking revolution](http://doi.org/10.1038/d41586-019-02942-5)
-    - v0.3.0 is released. See [the release notes](https://github.com/jgraving/DeepPoseKit/releases/tag/v0.3.0).
-- **April 2019:** The DeepPoseKit preprint is on biorxiv (http://preprint.deepposekit.org)
