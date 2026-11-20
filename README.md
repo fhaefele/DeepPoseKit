@@ -347,6 +347,19 @@ Use `--overwrite` to replace a single output file.
 
 ### Help, completion, and environment
 
+The [CLI reference](docs/cli.md) lists every command and its flags. Use
+the installed command to look up the reference for your version or return
+a JSON object for automation.
+
+```bash
+deepposekit help --format json dataset split
+deepposekit help --format markdown
+```
+
+JSON includes the executable and package versions, command and subcommand
+paths, arguments, defaults, mutual exclusion groups, and example arguments.
+Use `program` followed by the selected example's `argv` array to run it.
+
 Run `deepposekit train --help` for command-specific flags and
 `deepposekit doctor` for installed versions and detected devices. Help uses
 terminal width and supports `--color auto|always|never`. Machine-readable
@@ -365,6 +378,28 @@ autoload -Uz compinit
 compinit
 source <(deepposekit completion zsh)
 ```
+
+### Run the checked CLI examples
+
+From the checkout root, the workflow creates a tiny video and labeled
+annotations, trains a model, and runs prediction, review, and dataset
+commands. CI runs the same examples with the GPU hidden.
+
+```bash
+uv sync --locked
+CUDA_VISIBLE_DEVICES=-1 uv run --locked python examples/cli_workflow.py
+```
+
+On Linux or WSL2 with an NVIDIA GPU, install the CUDA extra once and run
+the workflow with a GPU check.
+
+```bash
+uv sync --locked --extra gpu
+uv run --locked deepposekit doctor
+uv run --locked python examples/cli_workflow.py --require-gpu
+```
+
+Use `--output-dir cli-demo` to keep the generated files in a new directory.
 
 ## Train from HDF5 annotations
 
@@ -464,6 +499,20 @@ Open an issue with your model class, checkpoint format, environment, and a
 minimal example. [Fork issue tracker](https://github.com/fhaefele/DeepPoseKit/issues)
 
 DeepPoseKit was developed by Jake Graving and Daniel Chae. [Upstream repository](https://github.com/jgraving/DeepPoseKit)
+
+### CLI reference and checked examples
+
+After changing the parser or its example arguments, regenerate the reference
+from the checkout root.
+
+```bash
+uv run --locked deepposekit help --format markdown > docs/cli.md
+```
+
+The CPU suite checks the generated file against the parser. The separate CLI
+example step executes the argument vectors shared by the reference and
+`examples/cli_workflow.py`. Add new checked examples to that catalog and
+provide their inputs in the workflow.
 
 ## License
 

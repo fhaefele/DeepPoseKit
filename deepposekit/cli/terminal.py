@@ -99,6 +99,7 @@ class TerminalParser(argparse.ArgumentParser):
         self.color = color
         self.stream = None
         self.command_groups = {}
+        self.reference_notes = []
         super().__init__(
             *args, formatter_class=HelpFormatter, allow_abbrev=False, **kwargs
         )
