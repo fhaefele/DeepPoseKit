@@ -1039,3 +1039,30 @@ class ReviewTools(unittest.TestCase):
         self.succeeds("dataset", "merge", self.annotations, other, "--output", output)
         with h5py.File(output, "r") as file:
             self.assertNotIn("coordinate", file.attrs)
+
+    def test_dataset_merge_preserves_types_committed_in_source_files(self):
+        source = self.path / "committed.h5"
+        source.write_bytes(self.annotations.read_bytes())
+        with h5py.File(source, "r+") as file:
+            pixel_type = h5py.h5t.STD_U16LE.copy()
+            pixel_type.set_precision(12)
+            pixel_type.commit(file.id, b"pixel_type")
+            del file["images"]
+            images = file.create_dataset(
+                "images", shape=self.images.shape, dtype=file["pixel_type"]
+            )
+            images[:] = self.images
+            file.attrs.create("precision", np.uint16(12), dtype=file["pixel_type"])
+        merged = self.path / "merged.h5"
+        self.succeeds("dataset", "merge", source, source, "--output", merged)
+        with h5py.File(merged, "r") as output, h5py.File(source, "r") as original:
+            np.testing.assert_array_equal(
+                output["images"][:], np.concatenate((self.images, self.images))
+            )
+            self.assertEqual(
+                output["images"].id.get_type(), original["images"].id.get_type()
+            )
+            self.assertEqual(
+                output.attrs.get_id("precision").get_type(),
+                original.attrs.get_id("precision").get_type(),
+            )

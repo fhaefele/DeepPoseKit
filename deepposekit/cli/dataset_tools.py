@@ -53,7 +53,7 @@ def _copy_attributes(source, target):
             attribute.read(values, mtype=memory_type)
         encoded_name = name.encode("utf-8") if isinstance(name, str) else name
         copied = h5py.h5a.create(
-            target.id, encoded_name, attribute.get_type(), attribute.get_space()
+            target.id, encoded_name, attribute.get_type().copy(), attribute.get_space()
         )
         try:
             if values is not None:
@@ -111,7 +111,7 @@ def _create_output(file, template, arrays, metadata, rows):
             key,
             shape=(rows, *array.shape[1:]),
             maxshape=(None, *array.shape[1:]),
-            dtype=h5py.Datatype(array.id.get_type()),
+            dtype=h5py.Datatype(array.id.get_type().copy()),
             chunks=True,
             track_order=True,
         )
@@ -121,7 +121,7 @@ def _create_output(file, template, arrays, metadata, rows):
         output = file.create_dataset(
             key,
             data=array[:],
-            dtype=h5py.Datatype(array.id.get_type()),
+            dtype=h5py.Datatype(array.id.get_type().copy()),
             track_order=True,
         )
         _copy_attributes(array, output)
@@ -182,7 +182,7 @@ def merge(args):
                 if index == 0:
                     destination = _create_output(result, file, arrays, metadata, rows)
                     template = {
-                        key: (array.shape[1:], array.id.get_type())
+                        key: (array.shape[1:], array.id.get_type().copy())
                         for key, array in arrays.items()
                     }
                     skeleton = metadata["skeleton"][:]
