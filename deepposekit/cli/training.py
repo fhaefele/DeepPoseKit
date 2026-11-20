@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from hashlib import sha256
 from inspect import Parameter, signature
 from math import isfinite
-from multiprocessing import get_start_method
 import json
 import os
 from pathlib import Path
@@ -535,6 +534,14 @@ def _fine_tune(config, data, source):
     return load_model(source, generator=generator, compile=False)
 
 
+def _input_fingerprint(name, details):
+    fingerprint = (str(name), details.st_dev, details.st_ino)
+    # Staging a checkpoint can update its parent directory.
+    if not S_ISDIR(details.st_mode):
+        fingerprint += (details.st_size, details.st_mtime_ns)
+    return fingerprint
+
+
 def _directory_inputs(source, output):
     """Visit directory inputs in a deterministic order, including linked files."""
 
@@ -546,6 +553,8 @@ def _directory_inputs(source, output):
         on_error=raise_walk_error, follow_symlinks=True
     ):
         details = folder.stat()
+        # Record each alias and its target before pruning repeated traversal.
+        yield _input_fingerprint(folder.relative_to(source), details)
         identity = (details.st_dev, details.st_ino)
         if identity in visited:
             directories.clear()
@@ -559,7 +568,14 @@ def _directory_inputs(source, output):
             names = [name for name in names if name != output.name]
         directories.sort()
         for name in sorted(names):
-            yield folder / name
+            path = folder / name
+            try:
+                details = path.stat()
+            except FileNotFoundError:
+                if not path.is_symlink():
+                    raise
+                details = path.lstat()
+            yield _input_fingerprint(path.relative_to(source), details)
 
 
 def _training_run_id(config, selected, output):
@@ -573,26 +589,10 @@ def _training_run_id(config, selected, output):
         "pretrained"
     ):
         inputs.extend(_initial_weight_paths(config))
-    identity = []
-    for path in inputs:
-        details = path.stat()
-        fingerprint = (str(path.resolve()), details.st_dev, details.st_ino)
-        # Staging or removing a checkpoint can update its parent directory.
-        # Include size and mtime only for input files.
-        if not S_ISDIR(details.st_mode):
-            fingerprint += (details.st_size, details.st_mtime_ns)
-        identity.append(fingerprint)
+    identity = [_input_fingerprint(path.resolve(), path.stat()) for path in inputs]
     digest.update(json.dumps([str(output.absolute()), identity]).encode())
     if config.data.path.is_dir():
-        for path in _directory_inputs(config.data.path, output.resolve()):
-            details = path.stat()
-            fingerprint = (
-                str(path.relative_to(config.data.path)),
-                details.st_dev,
-                details.st_ino,
-                details.st_size,
-                details.st_mtime_ns,
-            )
+        for fingerprint in _directory_inputs(config.data.path, output.resolve()):
             digest.update(json.dumps(fingerprint).encode())
     return digest.hexdigest()
 
@@ -610,16 +610,14 @@ def train(args):
     output = output_file(config.output, ".keras", args.overwrite, *protected)
     colored = colors_enabled(sys.stderr, getattr(args, "color", "auto"))
     progress = TrainingProgress(sys.stderr, colored)
-    spawn_workers = (
-        config.data.custom_generator is not None
-        and config.fit_options.get("use_multiprocessing", False)
+    process_workers = (
+        config.fit_options.get("use_multiprocessing", False)
         and config.fit_options.get("n_workers", 1) > 0
-        and get_start_method() != "fork"
     )
     with redirect_stdout(progress), ExitStack() as resources:
         resources.callback(progress.finish)
         data = resources.enter_context(
-            open_data(config.data, spawn_workers=spawn_workers)
+            open_data(config.data, process_workers=process_workers)
         )
         model = (
             build_model(config, data)

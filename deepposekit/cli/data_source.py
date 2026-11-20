@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from multiprocessing import get_start_method
 from pathlib import Path
 
 from deepposekit.cli.components import config_path
@@ -83,7 +84,7 @@ def read_data_source(
 
 
 @contextmanager
-def open_data(source, *, full=False, spawn_workers=False):
+def open_data(source, *, full=False, process_workers=False):
     if source.custom_generator is None:
         options = dict(source.options)
         annotation_summary(source.path, options.get("dataset", "images"))
@@ -106,7 +107,11 @@ def open_data(source, *, full=False, spawn_workers=False):
                 "create_generator must return a deepposekit.io.BaseGenerator instance"
             )
         try:
-            if spawn_workers and type(data).__module__ == module.__name__:
+            if (
+                process_workers
+                and type(data).__module__ == module.__name__
+                and get_start_method() != "fork"
+            ):
                 raise ValueError(
                     "Spawn and forkserver workers need an importable generator class. "
                     "Define the class in an installed module or set use_multiprocessing=false."

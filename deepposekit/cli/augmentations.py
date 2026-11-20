@@ -178,11 +178,27 @@ def _draw_panel(axis, image, points, edges, title, *, rgb):
 
 def _preview(args):
     from deepposekit.cli.data_source import open_data
+    from deepposekit.cli.operations import output_file
+    from deepposekit.cli.render import require_display
 
     source, specifications = _inputs(args)
-    inputs = source.inputs
-    if args.config is not None:
-        inputs += (args.config,)
+    output = None
+    overwrite = args.overwrite
+    if args.output is None:
+        require_display()
+    else:
+        if source.custom_generator is not None and source.path.is_dir():
+            directory = source.path.resolve()
+            target = args.output.parent.resolve() / args.output.name
+            if directory in target.parents or directory in target.resolve().parents:
+                if target.exists() or target.is_symlink():
+                    raise ValueError(
+                        f"Preview output would replace a file in the custom data source: {target}"
+                    )
+                # Creation stays exclusive even if another process creates the file first.
+                overwrite = False
+        inputs = source.inputs if args.config is None else (*source.inputs, args.config)
+        output = output_file(args.output, ".png", overwrite, *inputs)
     with open_data(source, full=True) as data:
         if source.custom_generator is None:
             mode = source.options.get("mode", "annotated")
@@ -203,23 +219,17 @@ def _preview(args):
         frame = int(eligible[0]) if args.frame is None else args.frame
         if frame not in eligible:
             raise ValueError(f"Frame {frame} is unavailable in {selection}")
-        _render_preview(args, data, frame, specifications, inputs)
+        _render_preview(args, data, frame, specifications, output, overwrite)
 
 
-def _render_preview(args, data, frame, specifications, inputs):
+def _render_preview(args, data, frame, specifications, output, overwrite):
     from matplotlib import pyplot as plt
 
-    from deepposekit.cli.operations import output_file
-    from deepposekit.cli.render import display_or_save, require_display, skeleton_edges
+    from deepposekit.cli.render import display_or_save, skeleton_edges
 
     pipeline = iaa.Sequential(build_augmenters(data, specifications))
     if args.seed is not None:
         pipeline.seed_(args.seed)
-    output = None
-    if args.output is not None:
-        output = output_file(args.output, ".png", args.overwrite, *inputs)
-    else:
-        require_display()
     image = data.get_images([frame])
     points = data.get_keypoints([frame]).astype(float)
     points[np.any(points < 0, axis=-1)] = np.nan
@@ -241,7 +251,7 @@ def _render_preview(args, data, frame, specifications, inputs):
         for axis in list(axes.flat)[args.samples + 1 :]:
             axis.set_axis_off()
         figure.suptitle(f"Frame {frame}")
-        display_or_save(figure, output, args.overwrite)
+        display_or_save(figure, output, overwrite)
     finally:
         plt.close(figure)
 

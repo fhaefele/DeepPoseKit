@@ -202,8 +202,9 @@ also serve as the source. Pass any loader-specific dataset or mode settings
 through the custom generator's arguments.
 
 For augmentation preview, `--frame` selects a zero-based index in the
-custom generator's sample order. Use Python modules you trust, since
-DeepPoseKit executes the selected file.
+custom generator's sample order. Preview files inside a custom source directory
+are created exclusively. Save previews outside that directory to replace them.
+Use Python modules you trust, since DeepPoseKit executes the selected file.
 
 ### Convert and predict
 

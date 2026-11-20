@@ -678,7 +678,7 @@ class WorkflowTests(unittest.TestCase):
             status, _, errors = invoke("train", config)
             self.assertEqual(status, 0, errors)
 
-            preview = work / "preview.png"
+            preview = samples / "preview.png"
             status, _, errors = invoke(
                 "imgaug",
                 "preview",
@@ -690,9 +690,24 @@ class WorkflowTests(unittest.TestCase):
                 1,
                 "--output",
                 preview,
+                "--overwrite",
             )
             self.assertEqual(status, 0, errors)
-            self.assertTrue(preview.is_file())
+            original_preview = preview.read_bytes()
+            alias = work / "sample-alias"
+            alias.symlink_to(samples, target_is_directory=True)
+            status, _, errors = invoke(
+                "imgaug",
+                "preview",
+                "--config",
+                config,
+                "--output",
+                alias / preview.name,
+                "--overwrite",
+            )
+            self.assertEqual(status, 1)
+            self.assertIn("Preview output would replace a file", errors)
+            self.assertEqual(preview.read_bytes(), original_preview)
 
             spawn_config = work / "spawn.toml"
             spawn_config.write_text(
@@ -701,7 +716,7 @@ class WorkflowTests(unittest.TestCase):
                 )
             )
             with patch(
-                "deepposekit.cli.training.get_start_method", return_value="spawn"
+                "deepposekit.cli.data_source.get_start_method", return_value="spawn"
             ):
                 status, _, errors = invoke("train", spawn_config)
             self.assertEqual(status, 1)
@@ -1059,13 +1074,22 @@ class WorkflowTests(unittest.TestCase):
             root = Path(directory)
             source = root / "samples"
             source.mkdir()
-            labels = source / "labels.h5"
+            primary = source / "a"
+            alternate = source / "b"
+            primary.mkdir()
+            alternate.mkdir()
+            selected = source / "current"
+            selected.symlink_to(primary.name, target_is_directory=True)
+            labels = primary / "labels.h5"
             original_labels = self.annotations.read_bytes()
             labels.write_bytes(original_labels)
+            (alternate / labels.name).write_bytes(original_labels)
+            with h5py.File(alternate / labels.name, "r+") as file:
+                file["annotations"][0, 0, 0] += 2
             (root / "loader.py").write_text(
                 "from deepposekit.io import DataGenerator\n"
                 "def create_generator(path, *, argv):\n"
-                "    return DataGenerator(str(path / 'labels.h5'))\n"
+                "    return DataGenerator(str(path / 'current' / 'labels.h5'))\n"
             )
             config = root / "training.toml"
             config.write_text(
@@ -1116,6 +1140,15 @@ class WorkflowTests(unittest.TestCase):
 
             labels.write_bytes(original_labels)
             os.utime(labels, ns=(original.st_atime_ns, original.st_mtime_ns))
+            selected.unlink()
+            selected.symlink_to(alternate.name, target_is_directory=True)
+            status, _, errors = invoke("train", config, "--overwrite")
+            self.assertEqual(status, 1)
+            self.assertIn("completed backup belongs to different inputs", errors)
+            self.assertTrue(completed.is_file())
+
+            selected.unlink()
+            selected.symlink_to(primary.name, target_is_directory=True)
             with patch.object(
                 BaseModel, "fit", side_effect=AssertionError("unexpected fit")
             ):
