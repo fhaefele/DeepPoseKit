@@ -727,6 +727,23 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("Preview output would replace a file", errors)
             self.assertEqual(camera_frame.read_bytes(), original_preview)
 
+            outside_preview = work / "outside-preview.png"
+            outside_preview.write_bytes(b"old preview")
+            with chdir(samples):
+                status, _, errors = invoke(
+                    "imgaug",
+                    "preview",
+                    "--config",
+                    config,
+                    "--samples",
+                    1,
+                    "--output",
+                    "../outside-preview.png",
+                    "--overwrite",
+                )
+            self.assertEqual(status, 0, errors)
+            self.assertTrue(outside_preview.read_bytes().startswith(b"\x89PNG"))
+
             spawn_config = work / "spawn.toml"
             spawn_config.write_text(
                 content.replace("model.keras", "spawn.keras").replace(

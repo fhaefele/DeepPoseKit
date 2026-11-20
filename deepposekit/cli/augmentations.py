@@ -2,6 +2,8 @@
 
 from inspect import signature
 import json
+from os.path import abspath
+from pathlib import Path
 import tomllib
 
 import imgaug.augmenters as iaa
@@ -194,7 +196,7 @@ def _preview(args):
             # A dataset can reach files outside its root through a directory symlink.
             through_dataset = any(
                 parent.resolve().is_relative_to(directory)
-                for parent in target.absolute().parents
+                for parent in Path(abspath(target)).parents
             )
             target = target.parent.resolve() / target.name
             if through_dataset or target.resolve().is_relative_to(directory):
