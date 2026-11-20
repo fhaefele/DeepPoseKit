@@ -985,3 +985,57 @@ class ReviewTools(unittest.TestCase):
         self.assertTrue(error)
         self.assertEqual(parts.stat().st_ino, identity[0])
         self.assertEqual(list(parts.iterdir()), [])
+
+    def test_dataset_editing_preserves_hdf5_file_types_and_scalar_vlen(self):
+        source = self.path / "special.h5"
+        source.write_bytes(self.annotations.read_bytes())
+        with h5py.File(source, "r+") as file:
+            del file["images"]
+            precision = h5py.h5t.STD_U16LE.copy()
+            precision.set_precision(12)
+            images = file.create_dataset(
+                "images", shape=self.images.shape, dtype=h5py.Datatype(precision)
+            )
+            images[:] = self.images
+            padded = h5py.h5t.C_S1.copy()
+            padded.set_size(8)
+            padded.set_strpad(h5py.h5t.STR_SPACEPAD)
+            file.attrs.create("camera", b"camera", dtype=h5py.Datatype(padded))
+            file.attrs.create(
+                "pixel_bits", np.uint16(12), dtype=h5py.Datatype(precision)
+            )
+            values = np.empty((), dtype=object)
+            values[()] = np.array([1, 2], dtype=np.int32)
+            file.attrs.create("offsets", values, dtype=h5py.vlen_dtype("i4"))
+        outputs = [self.path / name for name in ("subset.h5", "merge.h5")]
+        self.succeeds(
+            "dataset", "split", source, "--frames", "2", "--output", outputs[0]
+        )
+        self.succeeds("dataset", "merge", source, source, "--output", outputs[1])
+        with h5py.File(source, "r") as input_file:
+            for output in outputs:
+                with h5py.File(output, "r") as result:
+                    self.assertEqual(
+                        result["images"].id.get_type(),
+                        input_file["images"].id.get_type(),
+                    )
+                    for key in ("camera", "pixel_bits", "offsets"):
+                        self.assertEqual(
+                            result.attrs.get_id(key).get_type(),
+                            input_file.attrs.get_id(key).get_type(),
+                        )
+                        self.assertEqual(result.attrs.get_id(key).shape, ())
+                        np.testing.assert_array_equal(
+                            result.attrs[key], input_file.attrs[key]
+                        )
+
+    def test_dataset_merge_compares_complex_attribute_components_separately(self):
+        other = self.path / "other.h5"
+        other.write_bytes(self.annotations.read_bytes())
+        for value, path in ((1.0, self.annotations), (2.0, other)):
+            with h5py.File(path, "r+") as file:
+                file.attrs["coordinate"] = complex(value, np.nan)
+        output = self.path / "merged.h5"
+        self.succeeds("dataset", "merge", self.annotations, other, "--output", output)
+        with h5py.File(output, "r") as file:
+            self.assertNotIn("coordinate", file.attrs)

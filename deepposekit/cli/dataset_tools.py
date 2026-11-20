@@ -39,29 +39,27 @@ def _open_annotations(file, dataset, *, allow_empty=False):
 
 
 def _copy_attributes(source, target):
-    for attr in source.attrs:
-        dtype = source.attrs.get_id(attr).dtype
+    for name in source.attrs:
+        attribute = source.attrs.get_id(name)
+        dtype = attribute.dtype
         if _reference_dtype(dtype):
             continue
-        value = source.attrs[attr]
-        string = h5py.check_string_dtype(dtype)
-        if (
-            string is not None
-            and string.length is None
-            and not isinstance(value, h5py.Empty)
-        ):
-            # h5py decodes variable-length attribute strings with surrogateescape.
-            # Write the corresponding bytes back without losing invalid UTF-8.
-            values = np.asarray(value, dtype=object)
-            value = np.empty(values.shape, dtype=object)
-            for index in np.ndindex(values.shape):
-                item = values[index]
-                value[index] = (
-                    item.encode("utf-8", "surrogateescape")
-                    if isinstance(item, str)
-                    else item
-                )
-        target.attrs.create(attr, value, dtype=dtype)
+        # Preserve the file's HDF5 type and dataspace. The NumPy buffer uses
+        # h5py's memory type so variable-length values can be copied safely.
+        values = None
+        if attribute.shape is not None:
+            values = np.zeros(attribute.shape, dtype=dtype)
+            memory_type = h5py.h5t.py_create(dtype)
+            attribute.read(values, mtype=memory_type)
+        encoded_name = name.encode("utf-8") if isinstance(name, str) else name
+        copied = h5py.h5a.create(
+            target.id, encoded_name, attribute.get_type(), attribute.get_space()
+        )
+        try:
+            if values is not None:
+                copied.write(values, mtype=memory_type)
+        finally:
+            copied.close()
 
 
 def _attribute_values_equal(first, second):
@@ -80,13 +78,21 @@ def _attribute_values_equal(first, second):
             _attribute_values_equal(a, b)
             for a, b in zip(left.flat, right.flat, strict=True)
         )
-    return np.array_equal(left, right, equal_nan=left.dtype.kind in "fc")
+    if left.dtype.kind == "c":
+        return np.array_equal(left.real, right.real, equal_nan=True) and np.array_equal(
+            left.imag, right.imag, equal_nan=True
+        )
+    return np.array_equal(left, right, equal_nan=left.dtype.kind == "f")
 
 
 def _equal_attributes(first, second, attr):
-    left = first.get_id(attr).get_type()
-    right = second.get_id(attr).get_type()
-    return left == right and _attribute_values_equal(first[attr], second[attr])
+    left = first.get_id(attr)
+    right = second.get_id(attr)
+    return (
+        left.shape == right.shape
+        and left.get_type() == right.get_type()
+        and _attribute_values_equal(first[attr], second[attr])
+    )
 
 
 def _keep_matching_attributes(target, source):
@@ -105,7 +111,7 @@ def _create_output(file, template, arrays, metadata, rows):
             key,
             shape=(rows, *array.shape[1:]),
             maxshape=(None, *array.shape[1:]),
-            dtype=array.dtype,
+            dtype=h5py.Datatype(array.id.get_type()),
             chunks=True,
             track_order=True,
         )
@@ -113,7 +119,10 @@ def _create_output(file, template, arrays, metadata, rows):
         destination[key] = output
     for key, array in metadata.items():
         output = file.create_dataset(
-            key, data=array[:], dtype=array.dtype, track_order=True
+            key,
+            data=array[:],
+            dtype=h5py.Datatype(array.id.get_type()),
+            track_order=True,
         )
         _copy_attributes(array, output)
     return destination
