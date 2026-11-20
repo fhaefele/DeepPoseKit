@@ -413,7 +413,7 @@ deepposekit predictions outliers predictions.npy --output candidates.csv
 Show dataset or checkpoint metadata.
 
 ```text
-deepposekit inspect [-h] [--color {auto,always,never}] [--dataset DATASET] input
+deepposekit inspect [-h] [--color {auto,always,never}] [--dataset DATASET] [--training-config | --training-settings] input
 ```
 
 | Argument or flags | Required | Default | Description |
@@ -422,7 +422,10 @@ deepposekit inspect [-h] [--color {auto,always,never}] [--dataset DATASET] input
 | `--color` | No | `"auto"` | Terminal colors (default: auto). Values `auto`, `always`, `never`. |
 | `input` | Yes | — | Annotation HDF5 file or checkpoint. |
 | `--dataset` | No | `"images"` | Image dataset key (default: images). |
+| `--training-config` | No | `false` | Extract the embedded training TOML. |
+| `--training-settings` | No | `false` | Extract recorded training settings as JSON. |
 
+Use at most one of `--training-config`, `--training-settings`.
 
 Inspect an annotation file.
 

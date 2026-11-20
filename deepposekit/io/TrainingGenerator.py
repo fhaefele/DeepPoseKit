@@ -92,7 +92,7 @@ class TrainingGenerator(PyDataset):
 
         super().__init__()
         self.random_seed = random_seed
-        if self.random_seed:
+        if self.random_seed is not None:
             np.random.seed(self.random_seed)
 
         self.shuffle = shuffle

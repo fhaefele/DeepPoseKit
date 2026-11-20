@@ -19,7 +19,7 @@ from importlib import import_module
 from math import isfinite
 from numbers import Integral
 from pathlib import Path
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 import h5py
 import keras
@@ -28,6 +28,7 @@ from deepposekit.io import TrainingGenerator
 from deepposekit.models._checkpoint import (
     METADATA_ENTRY,
     METADATA_FIELDS,
+    TRAINING_ENTRIES,
     assign_legacy_weights,
     normalize_legacy_graph,
     read_config,
@@ -131,7 +132,7 @@ def _load_legacy(path, custom_objects, compile_model):
     return model, metadata
 
 
-def _modern_checkpoint_metadata(path):
+def _modern_checkpoint_metadata(path, *, training_files=None):
     with ZipFile(path) as archive:
         try:
             with archive.open(METADATA_ENTRY) as entry:
@@ -140,7 +141,20 @@ def _modern_checkpoint_metadata(path):
             raise ValueError(
                 f"{path} lacks valid DeepPoseKit checkpoint metadata"
             ) from error
+        if training_files is not None:
+            for name in TRAINING_ENTRIES:
+                if name in archive.namelist():
+                    training_files[name] = archive.read(name)
     return metadata
+
+
+def read_training_file(path, entry):
+    """Read an embedded CLI training record without loading the model."""
+    try:
+        with ZipFile(path) as archive:
+            return archive.read(entry)
+    except (BadZipFile, KeyError) as error:
+        raise ValueError(f"{path} has no embedded {entry}") from error
 
 
 def read_checkpoint_metadata(path):
@@ -156,8 +170,8 @@ def read_checkpoint_metadata(path):
     raise ValueError(f"Unsupported DeepPoseKit checkpoint format at {path}")
 
 
-def _load_modern(path, custom_objects, compile_model):
-    metadata = _modern_checkpoint_metadata(path)
+def _load_modern(path, custom_objects, compile_model, training_files):
+    metadata = _modern_checkpoint_metadata(path, training_files=training_files)
     model = keras.saving.load_model(
         path, custom_objects=custom_objects, compile=compile_model
     )
@@ -284,13 +298,16 @@ def load_model(path, generator=None, augmenter=None, custom_objects=None, compil
     if not path.is_file():
         raise FileNotFoundError(path)
     objects = {**_CUSTOM_LAYERS, **(custom_objects or {})}
+    training_files = {}
     if h5py.is_hdf5(path):
         train_model, metadata = _load_legacy(path, objects, compile)
     elif path.suffix == ".keras":
-        train_model, metadata = _load_modern(path, objects, compile)
+        train_model, metadata = _load_modern(path, objects, compile, training_files)
     else:
         raise ValueError(f"Unsupported DeepPoseKit checkpoint format at {path}")
-    return _restore_model(train_model, metadata, generator, augmenter)
+    model = _restore_model(train_model, metadata, generator, augmenter)
+    model._training_files = training_files
+    return model
 
 
 def load_legacy_weights(model, path):

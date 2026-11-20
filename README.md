@@ -131,11 +131,11 @@ options use the Python argument names.
 
 | Section | Options |
 | --- | --- |
-| `[data]` | `DataGenerator` options, including `dataset` and `mode`, with `annotations` supplying the HDF5 path. |
+| `[data]` | `DataGenerator` options, including `dataset` and `mode`, with `annotations` supplying the HDF5 path. An optional `preprocessing` string records how the images were prepared or loaded. |
 | `[generator]` | `TrainingGenerator` options such as `downsample_factor`, `use_graph`, `graph_scale`, `sigma`, `validation_split`, `shuffle`, and `random_seed`. |
 | `[model]` | Constructor options for `StackedDenseNet` (the default), `StackedHourglass`, `LEAP`, or `DeepLabCut`. Set `pretrained_weights = "none"` or `weights = "none"` on models that expose those options to initialize without external weights. |
 | `[compile]` | Keras `Model.compile` options. Omit the section for Adam and mean squared error. |
-| `[training]` | DeepPoseKit `fit` options and Keras fit controls such as `initial_epoch` and `validation_freq`. Set `batch_size`. Omit `steps_per_epoch` to use all full training batches. |
+| `[training]` | DeepPoseKit `fit` options and Keras fit controls such as `initial_epoch` and `validation_freq`. Set `batch_size`. Omit `steps_per_epoch` to use all full training batches. Set `random_seed` to seed Keras and imgaug before model construction. The generator's own seed still governs its split when supplied. |
 | `[output]` | Final `.keras` checkpoint path. |
 
 Optimizer, loss, and metric specifications accept Keras names or tables
@@ -145,6 +145,28 @@ DeepPoseKit's `FlipAxis`. Callbacks use Keras classes and DeepPoseKit's
 `Logger` and `ModelCheckpoint`. Use the Python API to supply custom objects.
 Commands that create an output require `--overwrite` to replace it.
 Checkpoint callback paths may use Keras placeholders such as `{epoch}`.
+
+The CLI embeds the original TOML and a JSON training record in its final and
+full `.keras` callback checkpoints. The record includes the initialization
+source, configured seeds, ordered augmentation, data loader and its arguments,
+batch sizes, learning rates, and scheduler and checkpoint settings. It stores
+the dataset path and selection. Use `[data].preprocessing` to describe
+preprocessing applied outside the model, including steps used to prepare the
+HDF5 or implemented in a custom loader. The annotation data stays in its
+source file.
+
+```bash
+deepposekit inspect fly.keras --training-config > recovered.toml
+deepposekit inspect fly.keras --training-settings > training-run.json
+```
+
+Put the recovered TOML beside the original config or update its relative
+paths. Choose a new output checkpoint and reapply any recorded command-line
+overrides, such as `--init-from` or custom generator arguments, before running
+`deepposekit train recovered.toml`. Epoch-end learning rates record observations
+from the active training process. A run resumed after an interruption may
+contain observations starting at the resumed epoch.
+
 Use a dedicated directory for `BackupAndRestore`. If training finishes and
 the final checkpoint cannot be written, retry the same command with
 `--overwrite` to publish the saved training state. When cleanup is enabled,

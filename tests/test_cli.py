@@ -262,6 +262,88 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertEqual(int(trained.train_model.optimizer.iterations), 1)
 
+    def test_training_recipe_extracts_exact_toml_and_resolved_settings(self):
+        config = self.path / "recipe.toml"
+        source = (
+            self.config.read_text()
+            .replace(
+                'annotations = "annotations.h5"',
+                'annotations = "annotations.h5"\npreprocessing = "camera LUT + CLAHE"',
+            )
+            .replace("epochs = 1", "epochs = 2\nrandom_seed = 0")
+            .replace(
+                '"TerminateOnNaN"',
+                '{name="ReduceLROnPlateau", monitor="loss", patience=1, '
+                "factor=0.5, min_delta=1000000}, "
+                '{name="EarlyStopping", monitor="loss", patience=5}, '
+                '{name="ModelCheckpoint", monitor="loss", save_best_only=true, '
+                'filepath="recipe-{epoch}.keras"}',
+            )
+            .replace('checkpoint = "model.keras"', 'checkpoint = "recipe.keras"')
+        )
+        original = (
+            ("# Training recipe – exact line endings\n" + source)
+            .replace("\n", "\r\n")
+            .encode("utf-8")
+        )
+        config.write_bytes(original)
+        checkpoint = self.path / "recipe.keras"
+        status, _, errors = invoke("train", config)
+        self.assertEqual(status, 0, errors)
+
+        extracted = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "deepposekit",
+                "inspect",
+                str(checkpoint),
+                "--training-config",
+            ],
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(extracted.stdout, original)
+        status, output, errors = invoke("inspect", checkpoint, "--training-settings")
+        self.assertEqual(status, 0, errors)
+        settings = json.loads(output)
+        self.assertEqual(settings["data"]["path"], str(self.annotations))
+        self.assertEqual(settings["data"]["dataset"], "images")
+        self.assertEqual(settings["data"]["preprocessing"], "camera LUT + CLAHE")
+        self.assertEqual(settings["random_seeds"], {"training": 0, "generator": 5})
+        self.assertEqual(settings["initialization"], {"kind": "random"})
+        self.assertEqual(
+            settings["augmenter"], [{"name": "FlipAxis", "axis": 1, "p": 1.0}]
+        )
+        self.assertEqual(settings["training"]["batch_size"], 2)
+        self.assertEqual(settings["training"]["validation_batch_size"], 1)
+        self.assertEqual(settings["training"]["epochs"], 2)
+        rate, stopping, best = settings["training"]["callbacks"]
+        self.assertEqual((rate["factor"], rate["patience"]), (0.5, 1))
+        self.assertEqual(stopping["patience"], 5)
+        self.assertEqual((best["monitor"], best["save_best_only"]), ("loss", True))
+        self.assertAlmostEqual(settings["initial_learning_rate"], 0.002)
+        observed = settings["observed_epoch_end_learning_rates"]
+        self.assertEqual([entry["epoch"] for entry in observed], [1, 2])
+        self.assertAlmostEqual(observed[0]["learning_rate"], 0.002)
+        self.assertAlmostEqual(observed[1]["learning_rate"], 0.001)
+
+        first_best = self.path / "recipe-1.keras"
+        self.assertEqual(
+            invoke("inspect", first_best, "--training-config")[1].encode(), original
+        )
+        status, best_output, errors = invoke(
+            "inspect", first_best, "--training-settings"
+        )
+        self.assertEqual(status, 0, errors)
+        self.assertEqual(json.loads(best_output)["checkpoint"]["epoch"], 1)
+        copied = self.path / "recipe-copy.keras"
+        load_model(checkpoint, compile=False).save(copied)
+        self.assertEqual(invoke("inspect", copied, "--training-settings")[1], output)
+        status, _, errors = invoke("inspect", self.annotations, "--training-config")
+        self.assertEqual(status, 1)
+        self.assertIn("has no embedded training.toml", errors)
+
     def test_predict_and_evaluate_include_short_final_batch(self):
         expected = self.model.predict(self.images, batch_size=2, verbose=0)
         output = self.path / "predictions.npy"
@@ -785,6 +867,20 @@ class WorkflowTests(unittest.TestCase):
                     "always",
                 )
             self.assertEqual(status, 0, errors)
+            status, extracted, errors = invoke(
+                "inspect", work / "fine-tuned.keras", "--training-settings"
+            )
+            self.assertEqual(status, 0, errors)
+            record = json.loads(extracted)
+            self.assertEqual(
+                record["initialization"],
+                {"kind": "checkpoint", "path": str(checkpoint)},
+            )
+            self.assertEqual(record["data"]["custom_generator"], str(module))
+            self.assertEqual(
+                record["data"]["custom_generator_args"],
+                ["--split", "validation", "--", "--color", "always"],
+            )
             for file, expected_count in (
                 (checkpoint, 5),
                 (work / "fine-tuned.keras", 4),
@@ -1102,6 +1198,17 @@ class WorkflowTests(unittest.TestCase):
         ):
             status, _, errors = invoke("train", config, "--overwrite")
         self.assertEqual(status, 0, errors)
+        status, extracted, errors = invoke(
+            "inspect", self.path / "recovery.keras", "--training-settings"
+        )
+        self.assertEqual(status, 0, errors)
+        self.assertEqual(
+            [
+                item["epoch"]
+                for item in json.loads(extracted)["observed_epoch_end_learning_rates"]
+            ],
+            [1],
+        )
         model = load_model(self.path / "recovery.keras", compile=True)
         self.assertEqual(int(model.train_model.optimizer.iterations), 1)
         self.assertEqual(len(model.train_model.get_weights()), len(expected_weights))
