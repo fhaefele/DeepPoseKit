@@ -1,5 +1,13 @@
 """Shared parsing of declarative component names and options."""
 
+from pathlib import Path
+
+
+def config_path(value, directory, option):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{option} must be a nonempty path")
+    return directory / Path(value).expanduser()
+
 
 def named_spec(value, what):
     if isinstance(value, str):

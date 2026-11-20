@@ -632,6 +632,132 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(closed.is_file())
         self.assertEqual(output.read_bytes(), prior)
 
+    def test_custom_generator_trains_previews_and_overrides_for_fine_tuning(self):
+        with TemporaryDirectory() as directory:
+            work = Path(directory)
+            samples = work / "labeled-data"
+            samples.mkdir()
+            keypoints = np.tile([[10.0, 12.0], [36.0, 24.0]], (5, 1, 1))
+            np.savez(samples / "train.npz", images=self.images, keypoints=keypoints)
+            np.savez(
+                samples / "validation.npz",
+                images=self.images[:-1],
+                keypoints=keypoints[:-1],
+            )
+            module = work / "custom.py"
+            module.write_text(
+                "import sys\n"
+                "import numpy as np\n"
+                "from deepposekit.io import BaseGenerator\n\n"
+                "class ArrayGenerator(BaseGenerator):\n"
+                "    skeleton_names = ['head', 'tail']\n"
+                "    def __init__(self, images, keypoints):\n"
+                "        self.images = images\n"
+                "        self.keypoints = keypoints\n"
+                "        super().__init__()\n"
+                "    def __len__(self): return len(self.images)\n"
+                "    def compute_image_shape(self): return self.images.shape[1:]\n"
+                "    def compute_keypoints_shape(self): return self.keypoints.shape[1:]\n"
+                "    def get_images(self, indices):\n"
+                "        assert __name__ in sys.modules\n"
+                "        return self.images[indices]\n"
+                "    def get_keypoints(self, indices): return self.keypoints[indices]\n\n"
+                "def create_generator(path, *, argv):\n"
+                "    assert argv in (['--split', 'train'],\n"
+                "                    ['--split', 'validation', '--', '--color', 'always'])\n"
+                "    with np.load(path / f'{argv[1]}.npz') as data:\n"
+                "        return ArrayGenerator(data['images'], data['keypoints'])\n"
+            )
+            config = work / "training.toml"
+            content = self.config.read_text().replace(
+                'annotations = "annotations.h5"',
+                'source = "labeled-data"\ncustom_generator = "custom.py"\n'
+                'custom_generator_args = ["--split", "train"]',
+            )
+            config.write_text(content)
+            status, _, errors = invoke("train", config)
+            self.assertEqual(status, 0, errors)
+
+            preview = work / "preview.png"
+            status, _, errors = invoke(
+                "imgaug",
+                "preview",
+                "--config",
+                config,
+                "--frame",
+                4,
+                "--samples",
+                1,
+                "--output",
+                preview,
+            )
+            self.assertEqual(status, 0, errors)
+            self.assertTrue(preview.is_file())
+
+            checkpoint = work / "model.keras"
+            config.write_text(
+                content.replace("custom.py", "unused.py").replace(
+                    "model.keras", "fine-tuned.keras"
+                )
+            )
+            with chdir(work):
+                status, _, errors = invoke(
+                    "train",
+                    config,
+                    "--init-from",
+                    checkpoint,
+                    "--custom-generator",
+                    "custom.py",
+                    "--custom-generator-args",
+                    "--split",
+                    "validation",
+                    "--",
+                    "--color",
+                    "always",
+                )
+            self.assertEqual(status, 0, errors)
+            for file, expected_count in (
+                (checkpoint, 5),
+                (work / "fine-tuned.keras", 4),
+            ):
+                model = load_model(file, compile=False)
+                data = model._checkpoint_metadata["train_generator_config"]["config"]
+                self.assertEqual(data["generator"], "ArrayGenerator")
+                self.assertEqual(data["n_samples"], expected_count)
+            self.assertFalse((work / "__pycache__").exists())
+            self.assertFalse(
+                any(name.startswith("_deepposekit_generator_") for name in sys.modules)
+            )
+
+    def test_custom_generator_rejects_invalid_factory_and_orphaned_arguments(self):
+        with TemporaryDirectory() as directory:
+            work = Path(directory)
+            module = work / "invalid.py"
+            config = work / "training.toml"
+            config.write_text(
+                self.config.read_text().replace(
+                    '"annotations.h5"', json.dumps(str(self.annotations))
+                )
+            )
+            status, _, errors = invoke(
+                "train", config, "--custom-generator-args", "--split", "train"
+            )
+            self.assertEqual(status, 1)
+            self.assertIn("require a custom generator", errors)
+
+            for source, expected in (
+                ("", "must define create_generator"),
+                ("def create_generator(path, *, argv): return 42\n", "must return"),
+            ):
+                with self.subTest(expected=expected):
+                    module.write_text(source)
+                    status, _, errors = invoke(
+                        "train", config, "--custom-generator", module
+                    )
+                    self.assertEqual(status, 1)
+                    self.assertIn(expected, errors)
+                    self.assertFalse((work / "model.keras").exists())
+
     def test_fine_tune_with_existing_weights_and_reject_wrong_skeleton(self):
         config = self.path / "fine-tune.toml"
         config.write_text(

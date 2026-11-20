@@ -2,7 +2,6 @@
 
 from inspect import signature
 import json
-from pathlib import Path
 import tomllib
 
 import imgaug.augmenters as iaa
@@ -123,6 +122,8 @@ def _toml(names):
 
 
 def _inputs(args):
+    from deepposekit.cli.data_source import read_data_source
+
     data = {}
     generator = {}
     if args.config is not None:
@@ -130,19 +131,10 @@ def _inputs(args):
             config = tomllib.load(file)
         data = config.get("data", {})
         generator = config.get("generator", {})
-        if not isinstance(data, dict) or not isinstance(generator, dict):
-            raise ValueError("Expected TOML tables for [data] and [generator]")
-        unknown = set(data) - {"annotations", "dataset", "mode"}
-        if unknown:
-            raise ValueError(f"Unknown [data] option(s): {', '.join(sorted(unknown))}")
-    annotations = args.annotations
-    if annotations is None and "annotations" in data:
-        raw_path = data["annotations"]
-        if not isinstance(raw_path, str) or not raw_path.strip():
-            raise ValueError("[data].annotations must be a nonempty path")
-        annotations = args.config.resolve().parent / Path(raw_path).expanduser()
-    if annotations is None:
-        raise ValueError("Provide --annotations or [data].annotations in --config")
+        if not isinstance(generator, dict):
+            raise ValueError("[generator] must be a TOML table")
+    directory = args.config.resolve().parent if args.config is not None else None
+    source = read_data_source(data, directory, annotations=args.annotations)
     specifications = (
         [tomllib.loads(f"augmenter = {entry}")["augmenter"] for entry in args.augment]
         if args.augment is not None
@@ -154,13 +146,7 @@ def _inputs(args):
         isinstance(spec, dict) for spec in specifications
     ):
         raise ValueError("Each --augment must be a TOML inline table containing 'name'")
-    dataset = data.get("dataset", "images")
-    mode = data.get("mode", "annotated")
-    if not isinstance(dataset, str) or not dataset:
-        raise ValueError("[data].dataset must be a nonempty string")
-    if mode not in ("full", "annotated", "unannotated"):
-        raise ValueError("[data].mode must be full, annotated, or unannotated")
-    return annotations, dataset, mode, specifications
+    return source, specifications
 
 
 def _variants(pipeline, image, points, samples):
@@ -191,37 +177,47 @@ def _draw_panel(axis, image, points, edges, title, *, rgb):
 
 
 def _preview(args):
+    from deepposekit.cli.data_source import open_data
+
+    source, specifications = _inputs(args)
+    inputs = source.inputs
+    if args.config is not None:
+        inputs += (args.config,)
+    with open_data(source, full=True) as data:
+        if source.custom_generator is None:
+            mode = source.options.get("mode", "annotated")
+            eligible = {
+                "annotated": data.annotated_index,
+                "unannotated": data.unannotated_index,
+                "full": data.index,
+            }[mode]
+            if args.frame is None and mode == "full" and data.n_annotated:
+                eligible = data.annotated_index
+            selection = f"{mode} mode"
+        else:
+            eligible = range(len(data))
+            selection = "the custom generator"
+
+        if not len(eligible):
+            raise ValueError(f"No frames are available in {selection}")
+        frame = int(eligible[0]) if args.frame is None else args.frame
+        if frame not in eligible:
+            raise ValueError(f"Frame {frame} is unavailable in {selection}")
+        _render_preview(args, data, frame, specifications, inputs)
+
+
+def _render_preview(args, data, frame, specifications, inputs):
     from matplotlib import pyplot as plt
 
-    from deepposekit.cli.operations import annotation_summary, output_file
+    from deepposekit.cli.operations import output_file
     from deepposekit.cli.render import display_or_save, require_display, skeleton_edges
-    from deepposekit.io import DataGenerator
 
-    annotations, dataset, mode, specifications = _inputs(args)
-    summary = annotation_summary(annotations, dataset)
-    data = DataGenerator(str(annotations), dataset=dataset, mode="full")
-    eligible = {
-        "annotated": data.annotated_index,
-        "unannotated": data.unannotated_index,
-        "full": data.index,
-    }[mode]
-    if args.frame is None:
-        if mode == "full" and data.n_annotated:
-            eligible = data.annotated_index
-        if not len(eligible):
-            raise ValueError(f"The annotation dataset has no frames in {mode} mode")
-        frame = int(eligible[0])
-    else:
-        frame = args.frame
-        if not 0 <= frame < summary["frames"] or frame not in eligible:
-            raise ValueError(f"Frame {frame} is unavailable in {mode} mode")
     pipeline = iaa.Sequential(build_augmenters(data, specifications))
     if args.seed is not None:
         pipeline.seed_(args.seed)
     output = None
     if args.output is not None:
-        sources = (annotations,) if args.config is None else (annotations, args.config)
-        output = output_file(args.output, ".png", args.overwrite, *sources)
+        output = output_file(args.output, ".png", args.overwrite, *inputs)
     else:
         require_display()
     image = data.get_images([frame])
