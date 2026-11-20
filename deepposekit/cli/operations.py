@@ -71,38 +71,42 @@ def atomic_output(path, overwrite):
             os.link(temporary, path)
 
 
+def annotation_arrays(file, dataset, *, allow_empty=False):
+    names = (dataset, "annotations", "annotated", "skeleton")
+    if not all(isinstance(file.get(name), h5py.Dataset) for name in names):
+        raise ValueError(
+            f"Expected a DeepPoseKit annotation HDF5 file with image key {dataset!r}"
+        )
+    images, points, labeled, skeleton = (file[name] for name in names)
+    if (
+        images.ndim != 4
+        or min(images.shape[1:]) < 1
+        or (not allow_empty and not len(images))
+    ):
+        description = "images" if allow_empty else "nonempty images"
+        raise ValueError(
+            f"Expected {description} shaped (frames, height, width, channels)"
+        )
+    if skeleton.ndim != 2 or skeleton.shape[1] != 2 or not len(skeleton):
+        raise ValueError("Expected a nonempty skeleton with parent and swap columns")
+    expected = (len(images), len(skeleton))
+    if points.shape != (*expected, 2) or labeled.shape != expected:
+        raise ValueError("Annotation dimensions do not match the images and skeleton")
+    graph_to_edges(skeleton[:, 0])
+    swap = skeleton[:, 1]
+    if not np.all(
+        np.isfinite(swap)
+        & (swap == np.floor(swap))
+        & (swap >= -1)
+        & (swap < len(skeleton))
+    ):
+        raise ValueError("Skeleton swap indices must be -1 or valid keypoint indices")
+    return images, points, labeled, skeleton
+
+
 def annotation_summary(path, dataset):
     with h5py.File(input_file(path), "r") as file:
-        names = (dataset, "annotations", "annotated", "skeleton")
-        if not all(isinstance(file.get(name), h5py.Dataset) for name in names):
-            raise ValueError(
-                f"Expected a DeepPoseKit annotation HDF5 file with image key {dataset!r}"
-            )
-        images, points, labeled, skeleton = (file[name] for name in names)
-        if images.ndim != 4 or min(images.shape, default=0) < 1:
-            raise ValueError(
-                "Expected nonempty images shaped (frames, height, width, channels)"
-            )
-        if skeleton.ndim != 2 or skeleton.shape[1] != 2 or not len(skeleton):
-            raise ValueError(
-                "Expected a nonempty skeleton with parent and swap columns"
-            )
-        expected = (len(images), len(skeleton))
-        if points.shape != (*expected, 2) or labeled.shape != expected:
-            raise ValueError(
-                "Annotation dimensions do not match the images and skeleton"
-            )
-        graph_to_edges(skeleton[:, 0])
-        swap = skeleton[:, 1]
-        if not np.all(
-            np.isfinite(swap)
-            & (swap == np.floor(swap))
-            & (swap >= -1)
-            & (swap < len(skeleton))
-        ):
-            raise ValueError(
-                "Skeleton swap indices must be -1 or valid keypoint indices"
-            )
+        images, _, labeled, skeleton = annotation_arrays(file, dataset)
         return {
             "kind": "annotations",
             "dataset": dataset,
@@ -602,6 +606,13 @@ def run(args):
     elif args.command == "doctor":
         doctor(args)
     elif args.command == "dataset":
+        if args.dataset_command in {"merge", "split"}:
+            from deepposekit.cli import dataset_tools
+
+            {"merge": dataset_tools.merge, "split": dataset_tools.split}[
+                args.dataset_command
+            ](args)
+            return
         from deepposekit.cli import annotation_tools
 
         {

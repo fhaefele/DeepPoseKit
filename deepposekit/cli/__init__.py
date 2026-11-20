@@ -218,6 +218,54 @@ def make_parser(
     batch_option(prelabel)
     output_options(prelabel)
 
+    merge = dataset_commands.add_parser(
+        "merge", help="Combine compatible annotation files in input order."
+    )
+    _path(
+        merge,
+        "annotations",
+        "h5",
+        "hdf5",
+        nargs="+",
+        metavar="ANNOTATIONS",
+        help="Annotation files in the order to combine.",
+    )
+    _path(
+        merge,
+        "--output",
+        "h5",
+        "hdf5",
+        required=True,
+        help="Combined annotation HDF5 file.",
+    )
+    merge.add_argument(
+        "--dataset", default="images", help="Image dataset key (default: images)."
+    )
+    output_options(merge)
+
+    split = dataset_commands.add_parser(
+        "split", help="Extract frames or partition an annotation file."
+    )
+    _path(
+        split, "annotations", "h5", "hdf5", help="An initialized annotation HDF5 file."
+    )
+    selects = split.add_mutually_exclusive_group(required=True)
+    selects.add_argument(
+        "--frames", help="Zero-based indices and end-exclusive ranges, e.g. 0:100,150."
+    )
+    selects.add_argument(
+        "--at", help="Comma-separated indices of the first row in each new part."
+    )
+    outputs = split.add_mutually_exclusive_group(required=True)
+    _path(outputs, "--output", "h5", "hdf5", help="Annotation HDF5 file for --frames.")
+    _path(
+        outputs, "--output-dir", help="New directory for numbered --at parts."
+    ).completer = DirectoriesCompleter()
+    split.add_argument(
+        "--dataset", default="images", help="Image dataset key (default: images)."
+    )
+    output_options(split)
+
     image_tools = command(
         "imgaug", "Data and inspection", "Discover and preview training augmentations."
     )
@@ -463,11 +511,16 @@ def main(
     index = argv.index(READER_ARGS) if READER_ARGS in argv[:end] else len(argv)
     args, extra = parser.parse_known_args(argv[: index + 1])
     # A variadic positional stops at the first option. Keep accepting input
-    # and output paths separated by flags, as in the original predict syntax.
+    # paths separated by flags for predictions and dataset merges.
+    variadic_paths = None
     if args.command == "predict":
+        variadic_paths = args.paths
+    elif args.command == "dataset" and args.dataset_command == "merge":
+        variadic_paths = args.annotations
+    if variadic_paths is not None:
         stop = extra.index("--") if "--" in extra else len(extra)
         if all(not token.startswith("-") for token in extra[:stop]):
-            args.paths.extend(map(Path, extra[:stop] + extra[stop + 1 :]))
+            variadic_paths.extend(map(Path, extra[:stop] + extra[stop + 1 :]))
             extra = []
     if extra:
         parser.error(f"unrecognized arguments: {' '.join(extra)}")

@@ -726,3 +726,343 @@ class ReviewTools(unittest.TestCase):
         self.assertEqual(output.read_bytes(), b"prior output")
         with h5py.File(self.annotations, "r") as file:
             np.testing.assert_array_equal(file["virtual_metrics"][:], [21, 42])
+
+    def test_dataset_split_extracts_rows_in_order_with_labels(self):
+        output = self.path / "subset.hdf5"
+        self.succeeds(
+            "dataset",
+            "split",
+            self.annotations,
+            "--frames",
+            "5, 1:3, 5",
+            "--output",
+            output,
+        )
+        with (
+            h5py.File(output, "r") as result,
+            h5py.File(self.annotations, "r") as original,
+        ):
+            for key in ("images", "annotations", "annotated"):
+                np.testing.assert_array_equal(
+                    result[key][:], original[key][:][[5, 1, 2, 5]]
+                )
+                self.assertIsNone(result[key].maxshape[0])
+            np.testing.assert_array_equal(
+                result["skeleton"][:], original["skeleton"][:]
+            )
+            np.testing.assert_array_equal(
+                result["skeleton_names"][:], original["skeleton_names"][:]
+            )
+            self.assertEqual(result.attrs["lab"], "fixture")
+
+    def test_dataset_partition_and_merge_round_trip_custom_key_and_metadata(self):
+        with h5py.File(self.annotations, "r+") as file:
+            file.move("images", "camera2")
+            file["camera2"].attrs["units"] = "pixels"
+        parts = self.path / "parts"
+        out = self.succeeds(
+            "dataset",
+            "split",
+            self.annotations,
+            "--dataset",
+            "camera2",
+            "--at",
+            "2,5",
+            "--output-dir",
+            parts,
+        )
+        sources = [parts / f"part-{number:03d}.h5" for number in (1, 2, 3)]
+        self.assertEqual(out.splitlines(), list(map(str, sources)))
+        with h5py.File(sources[1], "r+") as file:
+            self.assertEqual(file.attrs["lab"], "fixture")
+            file.attrs["lab"] = "different"
+        output = self.path / "merged.hdf5"
+        self.succeeds(
+            "dataset",
+            "merge",
+            sources[2],
+            sources[0],
+            sources[1],
+            "--output",
+            output,
+            "--dataset",
+            "camera2",
+        )
+        with (
+            h5py.File(output, "r") as result,
+            h5py.File(self.annotations, "r") as original,
+        ):
+            order = [5, 6, 7, 0, 1, 2, 3, 4]
+            self.assertEqual(result["camera2"].attrs["units"], "pixels")
+            self.assertNotIn("lab", result.attrs)
+            for key in ("camera2", "annotations", "annotated"):
+                np.testing.assert_array_equal(result[key][:], original[key][:][order])
+
+    def test_dataset_merge_rejects_incompatible_skeleton_and_keeps_prior_output(self):
+        other = self.path / "other.h5"
+        other.write_bytes(self.annotations.read_bytes())
+        with h5py.File(other, "r+") as file:
+            file["skeleton_names"][:] = [b"right", b"left"]
+        output = self.path / "merged.h5"
+        output.write_bytes(b"prior result")
+        for change in ("names", "missing", "dtype"):
+            if change != "names":
+                with h5py.File(other, "r+") as file:
+                    if change == "missing":
+                        del file["skeleton_names"]
+                    else:
+                        images = file["images"][:]
+                        del file["images"]
+                        file["images"] = images.astype(np.uint16)
+            code, _, error = invoke(
+                "dataset",
+                "merge",
+                self.annotations,
+                other,
+                "--output",
+                output,
+                "--overwrite",
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("dtype" if change == "dtype" else "skeleton names", error)
+            self.assertEqual(output.read_bytes(), b"prior result")
+
+    def test_dataset_split_validates_boundaries_and_publishes_all_parts(self):
+        from unittest.mock import patch
+        from deepposekit.cli import dataset_tools
+
+        output = self.path / "invalid.h5"
+        parts = self.path / "parts"
+        for select in ("3:3", "8", "2:", "1,,5"):
+            code, _, _ = invoke(
+                "dataset",
+                "split",
+                self.annotations,
+                "--frames",
+                select,
+                "--output",
+                output,
+            )
+            self.assertEqual(code, 1)
+            self.assertFalse(output.exists())
+        for points in ("0", "8", "2,2", "3,2", "4,"):
+            code, _, _ = invoke(
+                "dataset",
+                "split",
+                self.annotations,
+                "--at",
+                points,
+                "--output-dir",
+                parts,
+            )
+            self.assertEqual(code, 1)
+            self.assertFalse(parts.exists())
+        write = dataset_tools._write_subset
+
+        def fail_later(path, *args):
+            if path.name == "part-002.h5":
+                raise OSError("write failed")
+            return write(path, *args)
+
+        with patch.object(dataset_tools, "_write_subset", side_effect=fail_later):
+            code, _, error = invoke(
+                "dataset", "split", self.annotations, "--at", "2", "--output-dir", parts
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("write failed", error)
+        self.assertFalse(parts.exists())
+
+    def test_dataset_merge_protects_external_backing_files(self):
+        linked = self.path / "linked.h5"
+        linked.write_bytes(self.annotations.read_bytes())
+        backing = self.path / "backing.h5"
+        with h5py.File(linked, "r+") as file, h5py.File(backing, "w") as external:
+            file.copy("images", external)
+            del file["images"]
+            file["images"] = h5py.ExternalLink(backing.name, "/images")
+        protected = backing.read_bytes()
+        code, _, error = invoke(
+            "dataset",
+            "merge",
+            linked,
+            self.annotations,
+            "--output",
+            backing,
+            "--overwrite",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("would replace an input", error)
+        self.assertEqual(backing.read_bytes(), protected)
+        output = self.path / "portable.h5"
+        self.succeeds("dataset", "merge", linked, self.annotations, "--output", output)
+        with h5py.File(output, "r") as file:
+            self.assertIsInstance(file.get("images", getlink=True), h5py.HardLink)
+            np.testing.assert_array_equal(
+                file["images"][:], np.concatenate((self.images, self.images))
+            )
+
+    def test_dataset_merge_preserves_shared_special_hdf5_attributes(self):
+        sources = [self.path / name for name in ("left.h5", "right.h5")]
+        values = np.empty(2, dtype=object)
+        values[0] = np.array([1, 2], dtype=np.int32)
+        values[1] = np.array([3], dtype=np.int32)
+        large = np.arange(40_000, dtype=np.float64)
+        for source in sources:
+            with (
+                h5py.File(self.annotations, "r") as original,
+                h5py.File(source, "w", track_order=True) as file,
+            ):
+                for key in original:
+                    original.copy(key, file)
+                file.attrs["null_float"] = h5py.Empty("f8")
+                file.attrs["raw"] = b"\xff\xc3\xa9"
+                file.attrs.create("ragged", values, dtype=h5py.vlen_dtype("i4"))
+                file.attrs["large"] = large
+        output = self.path / "merged.h5"
+        self.succeeds("dataset", "merge", sources[0], "--output", output, sources[1])
+        with h5py.File(output, "r") as result:
+            self.assertIsInstance(result.attrs["null_float"], h5py.Empty)
+            self.assertEqual(
+                result.attrs["raw"].encode("utf-8", "surrogateescape"), b"\xff\xc3\xa9"
+            )
+            np.testing.assert_array_equal(result.attrs["ragged"][0], [1, 2])
+            np.testing.assert_array_equal(result.attrs["ragged"][1], [3])
+            np.testing.assert_array_equal(result.attrs["large"], large)
+
+    def test_dataset_merge_rejects_enums_with_different_meanings(self):
+        left, right = [self.path / name for name in ("left.h5", "right.h5")]
+        for path, enum in (
+            (left, {"unchecked": 0, "checked": 1}),
+            (right, {"checked": 0, "unchecked": 1}),
+        ):
+            path.write_bytes(self.annotations.read_bytes())
+            with h5py.File(path, "r+") as file:
+                flags = file["annotated"][:].astype(np.uint8)
+                del file["annotated"]
+                file.create_dataset(
+                    "annotated", data=flags, dtype=h5py.enum_dtype(enum, "u1")
+                )
+        output = self.path / "merged.h5"
+        code, _, error = invoke("dataset", "merge", left, right, "--output", output)
+        self.assertEqual(code, 1)
+        self.assertIn("incompatible annotated", error)
+        self.assertFalse(output.exists())
+
+    def test_dataset_merge_accepts_initialized_empty_sources(self):
+        empty = self.path / "empty.h5"
+        initialize_dataset(str(empty), self.images[:0], str(self.skeleton))
+        output = self.path / "merged.h5"
+        self.succeeds(
+            "dataset", "merge", empty, self.annotations, empty, "--output", output
+        )
+        with h5py.File(output, "r") as file:
+            np.testing.assert_array_equal(file["images"][:], self.images)
+        self.succeeds(
+            "dataset", "merge", empty, empty, "--output", output, "--overwrite"
+        )
+        data = DataGenerator(str(output), mode="full")
+        self.assertEqual(len(data), 0)
+
+    def test_dataset_partition_refuses_a_concurrently_created_empty_directory(self):
+        from unittest.mock import patch
+        from deepposekit.cli import dataset_tools
+
+        write = dataset_tools._write_subset
+        parts = self.path / "parts"
+        identity = []
+
+        def compete(path, *args):
+            write(path, *args)
+            if path.name == "part-001.h5":
+                parts.mkdir()
+                identity.append(parts.stat().st_ino)
+
+        with patch.object(dataset_tools, "_write_subset", side_effect=compete):
+            code, _, error = invoke(
+                "dataset", "split", self.annotations, "--at", "2", "--output-dir", parts
+            )
+        self.assertEqual(code, 1)
+        self.assertTrue(error)
+        self.assertEqual(parts.stat().st_ino, identity[0])
+        self.assertEqual(list(parts.iterdir()), [])
+
+    def test_dataset_editing_preserves_hdf5_file_types_and_scalar_vlen(self):
+        source = self.path / "special.h5"
+        source.write_bytes(self.annotations.read_bytes())
+        with h5py.File(source, "r+") as file:
+            del file["images"]
+            precision = h5py.h5t.STD_U16LE.copy()
+            precision.set_precision(12)
+            images = file.create_dataset(
+                "images", shape=self.images.shape, dtype=h5py.Datatype(precision)
+            )
+            images[:] = self.images
+            padded = h5py.h5t.C_S1.copy()
+            padded.set_size(8)
+            padded.set_strpad(h5py.h5t.STR_SPACEPAD)
+            file.attrs.create("camera", b"camera", dtype=h5py.Datatype(padded))
+            file.attrs.create(
+                "pixel_bits", np.uint16(12), dtype=h5py.Datatype(precision)
+            )
+            values = np.empty((), dtype=object)
+            values[()] = np.array([1, 2], dtype=np.int32)
+            file.attrs.create("offsets", values, dtype=h5py.vlen_dtype("i4"))
+        outputs = [self.path / name for name in ("subset.h5", "merge.h5")]
+        self.succeeds(
+            "dataset", "split", source, "--frames", "2", "--output", outputs[0]
+        )
+        self.succeeds("dataset", "merge", source, source, "--output", outputs[1])
+        with h5py.File(source, "r") as input_file:
+            for output in outputs:
+                with h5py.File(output, "r") as result:
+                    self.assertEqual(
+                        result["images"].id.get_type(),
+                        input_file["images"].id.get_type(),
+                    )
+                    for key in ("camera", "pixel_bits", "offsets"):
+                        self.assertEqual(
+                            result.attrs.get_id(key).get_type(),
+                            input_file.attrs.get_id(key).get_type(),
+                        )
+                        self.assertEqual(result.attrs.get_id(key).shape, ())
+                        np.testing.assert_array_equal(
+                            result.attrs[key], input_file.attrs[key]
+                        )
+
+    def test_dataset_merge_compares_complex_attribute_components_separately(self):
+        other = self.path / "other.h5"
+        other.write_bytes(self.annotations.read_bytes())
+        for value, path in ((1.0, self.annotations), (2.0, other)):
+            with h5py.File(path, "r+") as file:
+                file.attrs["coordinate"] = complex(value, np.nan)
+        output = self.path / "merged.h5"
+        self.succeeds("dataset", "merge", self.annotations, other, "--output", output)
+        with h5py.File(output, "r") as file:
+            self.assertNotIn("coordinate", file.attrs)
+
+    def test_dataset_merge_preserves_types_committed_in_source_files(self):
+        source = self.path / "committed.h5"
+        source.write_bytes(self.annotations.read_bytes())
+        with h5py.File(source, "r+") as file:
+            pixel_type = h5py.h5t.STD_U16LE.copy()
+            pixel_type.set_precision(12)
+            pixel_type.commit(file.id, b"pixel_type")
+            del file["images"]
+            images = file.create_dataset(
+                "images", shape=self.images.shape, dtype=file["pixel_type"]
+            )
+            images[:] = self.images
+            file.attrs.create("precision", np.uint16(12), dtype=file["pixel_type"])
+        merged = self.path / "merged.h5"
+        self.succeeds("dataset", "merge", source, source, "--output", merged)
+        with h5py.File(merged, "r") as output, h5py.File(source, "r") as original:
+            np.testing.assert_array_equal(
+                output["images"][:], np.concatenate((self.images, self.images))
+            )
+            self.assertEqual(
+                output["images"].id.get_type(), original["images"].id.get_type()
+            )
+            self.assertEqual(
+                output.attrs.get_id("precision").get_type(),
+                original.attrs.get_id("precision").get_type(),
+            )
