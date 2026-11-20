@@ -55,3 +55,17 @@ Future
 - [ ] `deepposekit.pose3d` module? Does it make sense to support this, or just make the API abstract enough to let others use their own solution for 3D?
 - [ ] `deepposekit.localize` module. Train models that localize individuals using confidence maps. Update and further abstract `deepposekit.annotate`, `deepposekit.models`, etc.
 - [ ] `deepposekit.multiple` module. Add support for small groups of multiple individuals? Does it make sense to support this or focus on `deepposekit.localize`?
+
+## CLI reference and checked examples
+
+After changing the parser or its example arguments, regenerate the reference
+from the checkout root.
+
+```bash
+uv run --locked deepposekit help --format markdown > docs/cli.md
+```
+
+The CPU suite checks the generated file against the parser. The separate CLI
+example step executes the argument vectors shared by the reference and
+`examples/cli_workflow.py`. Add new checked examples to that catalog and
+provide their inputs in the workflow.

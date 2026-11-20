@@ -80,6 +80,10 @@ def make_parser(
             "--gray", action="store_true", help="Read grayscale frames."
         )
         if configure is None:
+            subparser.reference_notes.append(
+                "`--custom-reader-args` requires `--custom-reader` and forwards every remaining token. "
+                "With a custom reader, pass grayscale settings through the reader arguments."
+            )
             _path(
                 subparser,
                 "--custom-reader",
@@ -157,6 +161,12 @@ def make_parser(
     reader_options(
         init, partial(configure_reader, role="init") if configure_reader else None
     )
+    init.reference_notes.extend(
+        (
+            "`--sample diverse` requires `--count`. Use `--seed` with diverse sampling.",
+            "The output is an initialized annotation HDF5 file with unreviewed keypoints.",
+        )
+    )
     batch_option(init)
     output_options(init)
 
@@ -187,6 +197,9 @@ def make_parser(
         append, partial(configure_reader, role="append") if configure_reader else None
     )
     batch_option(append)
+    append.reference_notes.append(
+        "The CSV must have a `frame` column with zero-based indices. Appended rows start unreviewed."
+    )
     output_options(append)
 
     prelabel = dataset_commands.add_parser(
@@ -241,6 +254,10 @@ def make_parser(
     merge.add_argument(
         "--dataset", default="images", help="Image dataset key (default: images)."
     )
+    merge.reference_notes.append(
+        "Pass at least two files. Image shapes, array dtypes, and skeletons must agree. "
+        "Files are combined in input order."
+    )
     output_options(merge)
 
     split = dataset_commands.add_parser(
@@ -263,6 +280,15 @@ def make_parser(
     ).completer = DirectoriesCompleter()
     split.add_argument(
         "--dataset", default="images", help="Image dataset key (default: images)."
+    )
+    split.reference_notes.extend(
+        (
+            "`--frames` requires `--output`. Frame indices are zero-based and ranges exclude the stop. "
+            "The result preserves selection order, including repeats.",
+            "`--at` requires a new `--output-dir` and publishes consecutive parts together. "
+            "Split points must be strictly increasing and inside the dataset. "
+            "`--overwrite` applies only to a single output file.",
+        )
     )
     output_options(split)
 
@@ -449,6 +475,10 @@ def make_parser(
     batch_option(predict)
     output_options(predict)
     reader_options(predict, configure_predict)
+    predict.reference_notes.append(
+        "Without `--output-dir`, pass one recording and one output `.npy`. "
+        "Directory inputs and `--recursive` require `--output-dir`."
+    )
 
     convert = command(
         "convert", "Model workflow", "Convert a legacy HDF5 checkpoint to .keras."
@@ -473,6 +503,21 @@ def make_parser(
     )
     completion.add_argument(
         "shell", choices=("bash", "zsh"), help="Shell to generate code for."
+    )
+    help_command = command(
+        "help", "Environment and tools", "Show the installed command reference."
+    )
+    help_command.add_argument(
+        "--format",
+        choices=("text", "markdown", "json"),
+        default="text",
+        help="Reference output format (default: text).",
+    )
+    help_command.add_argument(
+        "path",
+        nargs="*",
+        metavar="COMMAND",
+        help="Optional command and subcommand names.",
     )
     return parser
 
@@ -528,6 +573,26 @@ def main(
         args.custom_reader_args = argv[index + 1 :]
     if args.command is None:
         parser.print_help()
+        return 0
+    if args.command == "help":
+        from deepposekit.cli.examples import EXAMPLES
+        from deepposekit.cli.reference import render_help
+
+        # A wrapper can require its own recording arguments for predict.
+        examples = tuple(
+            example
+            for example in EXAMPLES
+            if configure_predict is None or example[1][0] != "predict"
+        )
+        sys.stdout.write(
+            render_help(
+                parser,
+                args,
+                version=version,
+                deepposekit_version=__version__,
+                examples=examples,
+            )
+        )
         return 0
     if args.command == "completion":
         sys.stdout.write(argcomplete.shellcode([prog], shell=args.shell))
