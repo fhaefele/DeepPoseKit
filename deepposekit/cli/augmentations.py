@@ -187,10 +187,17 @@ def _preview(args):
     if args.output is None:
         require_display()
     else:
+        target = args.output
         if source.custom_generator is not None and source.path.is_dir():
             directory = source.path.resolve()
-            target = args.output.parent.resolve() / args.output.name
-            if directory in target.parents or directory in target.resolve().parents:
+            # Check intermediate ancestors before resolving the final parent.
+            # A dataset can reach files outside its root through a directory symlink.
+            through_dataset = any(
+                parent.resolve().is_relative_to(directory)
+                for parent in target.absolute().parents
+            )
+            target = target.parent.resolve() / target.name
+            if through_dataset or target.resolve().is_relative_to(directory):
                 if target.exists() or target.is_symlink():
                     raise ValueError(
                         f"Preview output would replace a file in the custom data source: {target}"
@@ -198,7 +205,7 @@ def _preview(args):
                 # Creation stays exclusive even if another process creates the file first.
                 overwrite = False
         inputs = source.inputs if args.config is None else (*source.inputs, args.config)
-        output = output_file(args.output, ".png", overwrite, *inputs)
+        output = output_file(target, ".png", overwrite, *inputs)
     with open_data(source, full=True) as data:
         if source.custom_generator is None:
             mode = source.options.get("mode", "annotated")
