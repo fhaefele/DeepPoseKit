@@ -324,4 +324,5 @@ def load_legacy_weights(model, path):
         if _legacy_checkpoint_layout(checkpoint) == "full":
             raise ValueError("Use load_model for full DeepPoseKit checkpoints")
         assign_legacy_weights(model.train_model, checkpoint, existing_model=True)
+    model._training_files = {}
     return model

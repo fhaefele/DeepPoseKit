@@ -200,8 +200,10 @@ deepposekit train fine-tune.toml --init-from best_model_densenet.h5
 
    If the original run overrode a custom generator from the command line,
    reapply `data.custom_generator` and the tokens in
-   `data.custom_generator_args`. Put `--custom-generator-args` last. For
-   example, a rerun with both a starting checkpoint and loader overrides is
+   `data.custom_generator_args`. Run from the recorded `working_directory`
+   if the loader arguments contain relative paths, or update those arguments
+   for your current directory. Put `--custom-generator-args` last. For example,
+   a rerun with both a starting checkpoint and loader overrides is
 
    ```bash
    deepposekit train recovered.toml --init-from original-start.keras \
@@ -210,8 +212,9 @@ deepposekit train fine-tune.toml --init-from best_model_densenet.h5
 
 The recovered TOML keeps the configured seeds, augmentation order, batch
 sizes, and scheduler and stopping rules. The JSON also records the observed
-epoch-end learning rates. After a restart, those observations may begin at
-the resumed epoch.
+epoch-end learning rates. A callback checkpoint reports the rate at the
+point where that callback saves it. After a restart, observations may begin
+at the resumed epoch.
 
 ### Train from a custom labeled dataset
 

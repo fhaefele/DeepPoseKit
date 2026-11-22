@@ -275,9 +275,11 @@ class WorkflowTests(unittest.TestCase):
                 '"TerminateOnNaN"',
                 '{name="ReduceLROnPlateau", monitor="loss", patience=1, '
                 "factor=0.5, min_delta=1000000}, "
-                '{name="EarlyStopping", monitor="loss", patience=5}, '
+                '{name="EarlyStopping", monitor="loss", patience=5, baseline=inf}, '
                 '{name="ModelCheckpoint", monitor="loss", save_best_only=true, '
-                'filepath="recipe-{epoch}.keras"}',
+                'filepath="recipe-{epoch}.keras"}, '
+                '{name="ModelCheckpoint", save_best_only=false, save_freq=1, '
+                'filepath="recipe-batch-{epoch}-{batch}.keras"}',
             )
             .replace('checkpoint = "model.keras"', 'checkpoint = "recipe.keras"')
         )
@@ -306,7 +308,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(extracted.stdout, original)
         status, output, errors = invoke("inspect", checkpoint, "--training-settings")
         self.assertEqual(status, 0, errors)
-        settings = json.loads(output)
+        settings = json.loads(
+            output,
+            parse_constant=lambda value: self.fail(f"Invalid JSON number: {value}"),
+        )
+        self.assertEqual(settings["working_directory"], str(Path.cwd()))
         self.assertEqual(settings["data"]["path"], str(self.annotations))
         self.assertEqual(settings["data"]["dataset"], "images")
         self.assertEqual(settings["data"]["preprocessing"], "camera LUT + CLAHE")
@@ -318,10 +324,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(settings["training"]["batch_size"], 2)
         self.assertEqual(settings["training"]["validation_batch_size"], 1)
         self.assertEqual(settings["training"]["epochs"], 2)
-        rate, stopping, best = settings["training"]["callbacks"]
+        self.assertEqual(settings["training"]["initial_epoch"], 0)
+        self.assertEqual(settings["training"]["validation_freq"], 1)
+        self.assertIs(settings["training"]["shuffle"], True)
+        self.assertEqual(settings["training"]["max_queue_size"], 10)
+        rate, stopping, best, _ = settings["training"]["callbacks"]
         self.assertEqual((rate["factor"], rate["patience"]), (0.5, 1))
         self.assertEqual(stopping["patience"], 5)
+        self.assertEqual(stopping["baseline"], "inf")
         self.assertEqual((best["monitor"], best["save_best_only"]), ("loss", True))
+        self.assertIs(best["save_weights_only"], False)
+        self.assertIsNone(best["initial_value_threshold"])
         self.assertAlmostEqual(settings["initial_learning_rate"], 0.002)
         observed = settings["observed_epoch_end_learning_rates"]
         self.assertEqual([entry["epoch"] for entry in observed], [1, 2])
@@ -336,13 +349,46 @@ class WorkflowTests(unittest.TestCase):
             "inspect", first_best, "--training-settings"
         )
         self.assertEqual(status, 0, errors)
-        self.assertEqual(json.loads(best_output)["checkpoint"]["epoch"], 1)
+        best_settings = json.loads(best_output)
+        self.assertEqual(best_settings["checkpoint"]["epoch"], 1)
+        self.assertEqual(
+            best_settings["observed_epoch_end_learning_rates"], observed[:1]
+        )
+
+        status, batch_output, errors = invoke(
+            "inspect", self.path / "recipe-batch-1-1.keras", "--training-settings"
+        )
+        self.assertEqual(status, 0, errors)
+        batch_settings = json.loads(batch_output)
+        self.assertEqual(batch_settings["checkpoint"]["epoch"], 1)
+        self.assertEqual(batch_settings["checkpoint"]["batch"], 1)
+        self.assertEqual(batch_settings["observed_epoch_end_learning_rates"], [])
+
         copied = self.path / "recipe-copy.keras"
         load_model(checkpoint, compile=False).save(copied)
         self.assertEqual(invoke("inspect", copied, "--training-settings")[1], output)
         status, _, errors = invoke("inspect", self.annotations, "--training-config")
         self.assertEqual(status, 1)
         self.assertIn("has no embedded training.toml", errors)
+
+    def test_python_retraining_drops_the_inherited_recipe(self):
+        model = load_model(
+            self.checkpoint,
+            generator=DataGenerator(str(self.annotations)),
+            compile=False,
+        )
+        model.compile("adam", "mse", jit_compile=False)
+        model.fit(batch_size=2, steps_per_epoch=1, verbose=0)
+        checkpoint = self.path / "python-retrained.keras"
+        model.save(checkpoint)
+        for flag, entry in (
+            ("--training-config", "training.toml"),
+            ("--training-settings", "training-run.json"),
+        ):
+            with self.subTest(flag=flag):
+                status, _, errors = invoke("inspect", checkpoint, flag)
+                self.assertEqual(status, 1)
+                self.assertIn(f"has no embedded {entry}", errors)
 
     def test_predict_and_evaluate_include_short_final_batch(self):
         expected = self.model.predict(self.images, batch_size=2, verbose=0)
@@ -851,14 +897,14 @@ class WorkflowTests(unittest.TestCase):
                     "model.keras", "fine-tuned.keras"
                 )
             )
-            with chdir(work):
+            with chdir(samples):
                 status, _, errors = invoke(
                     "train",
                     config,
                     "--init-from",
                     checkpoint,
                     "--custom-generator",
-                    "custom.py",
+                    "../custom.py",
                     "--custom-generator-args",
                     "--split",
                     "validation",
@@ -876,6 +922,8 @@ class WorkflowTests(unittest.TestCase):
                 record["initialization"],
                 {"kind": "checkpoint", "path": str(checkpoint)},
             )
+            self.assertEqual(record["working_directory"], str(samples))
+            self.assertEqual(record["config_path"], str(config))
             self.assertEqual(record["data"]["custom_generator"], str(module))
             self.assertEqual(
                 record["data"]["custom_generator_args"],

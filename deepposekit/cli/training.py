@@ -54,6 +54,7 @@ MODELS = {
 class TrainingConfig:
     source: Path
     toml: bytes
+    working_directory: Path
     data: DataSource
     generator_options: dict
     model_name: str
@@ -71,6 +72,16 @@ def _parameters(function, *excluded):
         if name not in excluded
         and value.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
     }
+
+
+_KERAS_FIT_CONTEXT = (
+    "self",
+    "x",
+    "y",
+    "validation_data",
+    "validation_split",
+    "sample_weight",
+)
 
 
 def _validate_keys(values, allowed, section):
@@ -141,15 +152,8 @@ def read_training_config(
     compile_options = _section(
         source, "compile", _parameters(keras.Model.compile, "self")
     )
-    fit_keys = _parameters(MODELS[name].fit, "self") | {"max_queue_size"}
-    fit_keys |= _parameters(
-        keras.Model.fit,
-        "self",
-        "x",
-        "y",
-        "validation_data",
-        "validation_split",
-        "sample_weight",
+    fit_keys = _parameters(MODELS[name].fit, "self") | _parameters(
+        keras.Model.fit, *_KERAS_FIT_CONTEXT
     )
     fit_options = _section(source, "training", fit_keys | {"random_seed"})
     random_seed = fit_options.pop("random_seed", None)
@@ -187,6 +191,7 @@ def read_training_config(
     return TrainingConfig(
         path,
         toml,
+        Path.cwd(),
         data,
         generator,
         name,
@@ -293,7 +298,7 @@ class _TrainingCheckpoint(callbacks.ModelCheckpoint):
                     self.model.train_model.save_weights(temporary)
             else:
                 if self.record is not None:
-                    self.record.attach(self.model, epoch=epoch + 1)
+                    self.record.attach(self.model, epoch=epoch, batch=batch)
                 self.model.save(path, overwrite=overwrite)
         except FileExistsError as error:
             raise FileExistsError(
@@ -460,7 +465,7 @@ def _callback_list(config, selected, overwrite, resources, *, run_id=None, recor
 
     if record is not None:
         record.settings["training"]["callbacks"] = [
-            _defaults(callback_type) | options | {"name": name}
+            _callback_defaults(name, callback_type) | options | {"name": name}
             for name, callback_type, options in specs
         ]
 
@@ -527,12 +532,31 @@ def _available_steps(model, fit):
     )
 
 
-def _defaults(constructor):
+def _defaults(constructor, *excluded):
     return {
         key: value.default
         for key, value in signature(constructor).parameters.items()
-        if key != "self" and value.default is not Parameter.empty
+        if key not in excluded and value.default is not Parameter.empty
     }
+
+
+def _callback_defaults(name, callback_type):
+    defaults = _defaults(callback_type)
+    if name == "ModelCheckpoint":
+        # The DeepPoseKit wrapper forwards the remaining options to Keras.
+        return _defaults(keras.callbacks.ModelCheckpoint) | defaults
+    return defaults
+
+
+def _json_compatible(value):
+    if isinstance(value, dict):
+        return {key: _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, float) and not isfinite(value):
+        # TOML supports non-finite settings that JSON can only store as text.
+        return str(value)
+    return value
 
 
 def _initialization(model, selected):
@@ -560,7 +584,11 @@ class _TrainingRecord(keras.callbacks.Callback):
         self.toml = config.toml
         data = config.data
         generator = model.train_generator
-        training = _defaults(model.fit) | config.fit_options
+        training = (
+            _defaults(keras.Model.fit, *_KERAS_FIT_CONTEXT)
+            | _defaults(model.fit, "self")
+            | config.fit_options
+        )
         training["steps_per_epoch"], training["validation_steps"] = steps
         training["callbacks"] = []
         if data.custom_generator is None:
@@ -573,6 +601,7 @@ class _TrainingRecord(keras.callbacks.Callback):
         self.settings = {
             "schema_version": 1,
             "config_path": str(config.source),
+            "working_directory": str(config.working_directory),
             "data": {
                 "path": str(data.path.resolve()),
                 **loader,
@@ -595,18 +624,27 @@ class _TrainingRecord(keras.callbacks.Callback):
             {"epoch": epoch + 1, "learning_rate": _learning_rate(self.model)}
         )
 
-    def attach(self, model, *, epoch=None):
-        checkpoint = {"learning_rate": _learning_rate(model.train_model)}
+    def attach(self, model, *, epoch=None, batch=None):
+        rate = _learning_rate(model.train_model)
+        checkpoint = {"learning_rate": rate}
+        snapshot = self.settings | {"checkpoint": checkpoint}
         if epoch is not None:
-            checkpoint["epoch"] = epoch
+            checkpoint["epoch"] = epoch + 1
+            if batch is None:
+                # The epoch-end save runs before the final observer callback.
+                history = self.settings["observed_epoch_end_learning_rates"]
+                snapshot["observed_epoch_end_learning_rates"] = [
+                    *history,
+                    {"epoch": epoch + 1, "learning_rate": rate},
+                ]
+            else:
+                checkpoint["batch"] = batch + 1
+        settings = json.dumps(
+            _json_compatible(snapshot), indent=2, default=str, allow_nan=False
+        )
         model._training_files = {
             TRAINING_CONFIG_ENTRY: self.toml,
-            TRAINING_SETTINGS_ENTRY: (
-                json.dumps(
-                    self.settings | {"checkpoint": checkpoint}, indent=2, default=str
-                )
-                + "\n"
-            ).encode("utf-8"),
+            TRAINING_SETTINGS_ENTRY: (settings + "\n").encode("utf-8"),
         }
 
 

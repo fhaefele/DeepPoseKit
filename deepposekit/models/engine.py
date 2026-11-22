@@ -112,6 +112,8 @@ class BaseModel:
         use_multiprocessing=False,
         n_workers=1,
         steps_per_epoch=None,
+        *,
+        max_queue_size=10,
         **kwargs
     ):
         """
@@ -136,6 +138,8 @@ class BaseModel:
         steps_per_epoch: int or None
             Number of batches per epoch. If `None` this is automatically determined
             based on the size of the dataset.
+        max_queue_size: int, default=10
+            Maximum number of prefetched batches queued by the data loader.
         """
 
         if self.train_generator is None:
@@ -161,13 +165,14 @@ class BaseModel:
                 "No validation set detected, so validation step will not be run and `val_loss` will not be available."
             )
 
-        max_queue_size = kwargs.pop("max_queue_size", 10)
         for dataset in (train_generator, validation_generator):
             if dataset is not None:
                 dataset.workers = n_workers
                 dataset.use_multiprocessing = use_multiprocessing
                 dataset.max_queue_size = max_queue_size
 
+        # A new training run supersedes any loaded CLI recipe.
+        self._training_files = {}
         return self.train_model.fit(
             train_generator,
             steps_per_epoch=steps_per_epoch,
