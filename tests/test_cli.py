@@ -371,13 +371,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("has no embedded training.toml", errors)
 
-    def test_python_retraining_drops_the_inherited_recipe(self):
+    def test_python_fit_drops_inherited_recipe_only_when_training_starts(self):
         model = load_model(
             self.checkpoint,
             generator=DataGenerator(str(self.annotations)),
             compile=False,
         )
         model.compile("adam", "mse", jit_compile=False)
+        with self.assertRaisesRegex(TypeError, "unsupported_argument"):
+            model.fit(batch_size=2, unsupported_argument=True)
+        unchanged = self.path / "python-unchanged.keras"
+        model.save(unchanged)
+        for flag in ("--training-config", "--training-settings"):
+            status, output, errors = invoke("inspect", unchanged, flag)
+            self.assertEqual(status, 0, errors)
+            self.assertEqual(output, invoke("inspect", self.checkpoint, flag)[1])
+
         model.fit(batch_size=2, steps_per_epoch=1, verbose=0)
         checkpoint = self.path / "python-retrained.keras"
         model.save(checkpoint)
@@ -1235,7 +1244,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("concurrent output", errors)
         self.assertTrue((backup / "latest.weights.h5").is_file())
         self.assertTrue((backup / "training_metadata.json").is_file())
-        self.assertTrue((backup / "completed.weights.h5").is_file())
+        completed = backup / "completed.weights.h5"
+        self.assertTrue(completed.is_file())
+        with h5py.File(completed, "r") as weights:
+            original_settings = weights.attrs["deepposekit_training_settings"]
         metrics = self.path / "recovery-metrics.h5"
         with h5py.File(metrics, "r") as file:
             self.assertEqual(len(file["logs/loss"]), 1)
@@ -1250,6 +1262,7 @@ class WorkflowTests(unittest.TestCase):
             "inspect", self.path / "recovery.keras", "--training-settings"
         )
         self.assertEqual(status, 0, errors)
+        self.assertEqual(extracted, original_settings)
         self.assertEqual(
             [
                 item["epoch"]
@@ -1349,11 +1362,25 @@ class WorkflowTests(unittest.TestCase):
 
             selected.unlink()
             selected.symlink_to(primary.name, target_is_directory=True)
-            with patch.object(
-                BaseModel, "fit", side_effect=AssertionError("unexpected fit")
+            # Simulate recovery of a completed backup from before run records.
+            with h5py.File(completed, "r+") as weights:
+                del weights.attrs["deepposekit_training_settings"]
+            with (
+                chdir(alternate),
+                patch.object(
+                    BaseModel, "fit", side_effect=AssertionError("unexpected fit")
+                ),
             ):
                 status, _, errors = invoke("train", config, "--overwrite")
             self.assertEqual(status, 0, errors)
+            status, extracted, errors = invoke(
+                "inspect", checkpoint, "--training-config"
+            )
+            self.assertEqual(status, 0, errors)
+            self.assertEqual(extracted, config.read_text())
+            status, _, errors = invoke("inspect", checkpoint, "--training-settings")
+            self.assertEqual(status, 1)
+            self.assertIn("has no embedded training-run.json", errors)
             model = load_model(checkpoint, compile=True)
             self.assertEqual(int(model.train_model.optimizer.iterations), 1)
             self.assertFalse(completed.exists())

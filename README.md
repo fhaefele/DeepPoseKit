@@ -214,7 +214,9 @@ The recovered TOML keeps the configured seeds, augmentation order, batch
 sizes, and scheduler and stopping rules. The JSON also records the observed
 epoch-end learning rates. A callback checkpoint reports the rate at the
 point where that callback saves it. After a restart, observations may begin
-at the resumed epoch.
+at the resumed epoch. Republishing a completed backup created before this
+feature embeds the verified TOML. Completed backups created with recipe
+recording preserve both records when republished.
 
 ### Train from a custom labeled dataset
 

@@ -17,6 +17,7 @@ import warnings
 
 import numpy as np
 from keras import Model
+from keras.callbacks import Callback
 from keras.layers import Input
 
 from deepposekit.models.layers.subpixel import SubpixelMaxima2D
@@ -24,6 +25,15 @@ from deepposekit.models.layers.convolutional import Maxima2D
 from deepposekit.utils.image import largest_factor
 from deepposekit.utils.keypoints import keypoint_errors
 from deepposekit.models.saving import save_model
+
+
+class _InvalidateTrainingRecipe(Callback):
+    def __init__(self, pose_model):
+        super().__init__()
+        self.pose_model = pose_model
+
+    def on_train_begin(self, logs=None):
+        self.pose_model._training_files = {}
 
 
 class BaseModel:
@@ -171,13 +181,15 @@ class BaseModel:
                 dataset.use_multiprocessing = use_multiprocessing
                 dataset.max_queue_size = max_queue_size
 
-        # A new training run supersedes any loaded CLI recipe.
-        self._training_files = {}
+        callbacks = self.activate_callbacks(callbacks)
+        if getattr(self, "_training_files", None):
+            # Keep the recipe if Keras rejects the fit before training starts.
+            callbacks.insert(0, _InvalidateTrainingRecipe(self))
         return self.train_model.fit(
             train_generator,
             steps_per_epoch=steps_per_epoch,
             epochs=epochs,
-            callbacks=self.activate_callbacks(callbacks),
+            callbacks=callbacks,
             validation_data=validation_generator,
             **kwargs
         )

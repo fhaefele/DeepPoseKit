@@ -818,16 +818,20 @@ def train(args):
         ]
         if recovered:
             settings = recovered[0].restore_completed(model.train_model)
+            # The backup verifies the TOML bytes. Records from the original
+            # training process are only available in newer backups.
+            model._training_files = {TRAINING_CONFIG_ENTRY: config.toml}
             if settings is not None:
-                record.settings = json.loads(settings)
+                model._training_files[TRAINING_SETTINGS_ENTRY] = settings.encode(
+                    "utf-8"
+                )
         else:
             fit["callbacks"] = [*fit.get("callbacks", ()), record]
             history = model.fit(**fit)
             loss = history.history.get("loss", [])
             if not len(loss) or not np.isfinite(loss).all():
                 raise ValueError("Training did not produce a finite loss")
-        record.attach(model)
-        if not recovered:
+            record.attach(model)
             for backup in backups:
                 backup.store_completed(
                     model.train_model,
