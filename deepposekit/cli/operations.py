@@ -17,7 +17,11 @@ import numpy as np
 
 from deepposekit.io import DataGenerator, VideoReader
 from deepposekit.models import load_model, load_legacy_weights
-from deepposekit.models.loading import read_checkpoint_metadata
+from deepposekit.models._checkpoint import (
+    TRAINING_CONFIG_ENTRY,
+    TRAINING_SETTINGS_ENTRY,
+)
+from deepposekit.models.loading import read_checkpoint_metadata, read_training_file
 from deepposekit.utils.keypoints import graph_to_edges, keypoint_errors
 
 
@@ -493,6 +497,16 @@ def convert(args):
 
 def inspect_input(args):
     path = input_file(args.input)
+    if args.training_config or args.training_settings:
+        entry = (
+            TRAINING_CONFIG_ENTRY if args.training_config else TRAINING_SETTINGS_ENTRY
+        )
+        contents = read_training_file(path, entry)
+        if hasattr(sys.stdout, "buffer"):
+            sys.stdout.buffer.write(contents)
+        else:
+            sys.stdout.write(contents.decode("utf-8"))
+        return
     kind = "checkpoint"
     if h5py.is_hdf5(path):
         with h5py.File(path, "r") as file:

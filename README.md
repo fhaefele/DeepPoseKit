@@ -131,11 +131,11 @@ options use the Python argument names.
 
 | Section | Options |
 | --- | --- |
-| `[data]` | `DataGenerator` options, including `dataset` and `mode`, with `annotations` supplying the HDF5 path. |
+| `[data]` | `DataGenerator` options, including `dataset` and `mode`, with `annotations` supplying the HDF5 path. An optional `preprocessing` string records how the images were prepared or loaded. |
 | `[generator]` | `TrainingGenerator` options such as `downsample_factor`, `use_graph`, `graph_scale`, `sigma`, `validation_split`, `shuffle`, and `random_seed`. |
 | `[model]` | Constructor options for `StackedDenseNet` (the default), `StackedHourglass`, `LEAP`, or `DeepLabCut`. Set `pretrained_weights = "none"` or `weights = "none"` on models that expose those options to initialize without external weights. |
 | `[compile]` | Keras `Model.compile` options. Omit the section for Adam and mean squared error. |
-| `[training]` | DeepPoseKit `fit` options and Keras fit controls such as `initial_epoch` and `validation_freq`. Set `batch_size`. Omit `steps_per_epoch` to use all full training batches. |
+| `[training]` | DeepPoseKit `fit` options and Keras fit controls such as `initial_epoch` and `validation_freq`. Set `batch_size`. Omit `steps_per_epoch` to use all full training batches. Set `random_seed` to seed Keras and imgaug before model construction. The generator's own seed still governs its split when supplied. |
 | `[output]` | Final `.keras` checkpoint path. |
 
 Optimizer, loss, and metric specifications accept Keras names or tables
@@ -145,6 +145,7 @@ DeepPoseKit's `FlipAxis`. Callbacks use Keras classes and DeepPoseKit's
 `Logger` and `ModelCheckpoint`. Use the Python API to supply custom objects.
 Commands that create an output require `--overwrite` to replace it.
 Checkpoint callback paths may use Keras placeholders such as `{epoch}`.
+
 Use a dedicated directory for `BackupAndRestore`. If training finishes and
 the final checkpoint cannot be written, retry the same command with
 `--overwrite` to publish the saved training state. When cleanup is enabled,
@@ -159,6 +160,63 @@ check the original keypoint order and skeleton before fine-tuning.
 ```bash
 deepposekit train fine-tune.toml --init-from best_model_densenet.h5
 ```
+
+### Rerun training from a checkpoint recipe
+
+`train` embeds the exact input TOML and a JSON run record in its final
+`.keras` checkpoint and in full `.keras` checkpoints saved by
+`ModelCheckpoint`. The annotation data stays in its source file.
+
+1. Extract both records from the checkpoint you want to reproduce.
+
+   ```bash
+   deepposekit inspect fly.keras --training-config > recovered.toml
+   deepposekit inspect fly.keras --training-settings > training-run.json
+   ```
+
+   `train` takes the recovered TOML as its positional argument. Use the JSON
+   as a reference for the resolved inputs and any command-line overrides.
+   Both extraction flags belong to `inspect`.
+
+2. Check the inputs and choose new output paths. The JSON's `config_path`
+   is the original TOML path. Put `recovered.toml` beside it or update its
+   relative paths. Use `data.path` to locate the annotations or custom loader
+   source, and keep the original dataset selection and preprocessing. A
+   recorded `data.preprocessing` describes how the source images were
+   prepared or loaded. Update `[output].checkpoint` and any checkpoint, log,
+   or backup paths in `[training].callbacks` for the rerun.
+
+3. Run training with the recovered TOML.
+
+   ```bash
+   deepposekit train recovered.toml
+   ```
+
+   If the original run fine-tuned a checkpoint, pass the path from
+   `initialization.path` as `--init-from`. This is the original starting
+   checkpoint. The `.keras` file you extracted from is the output of
+   that run. For ImageNet or a weights file, use the initialization settings
+   in `[model]` and update the weights path if it moved.
+
+   If the original run overrode a custom generator from the command line,
+   reapply `data.custom_generator` and the tokens in
+   `data.custom_generator_args`. Run from the recorded `working_directory`
+   if the loader arguments contain relative paths, or update those arguments
+   for your current directory. Put `--custom-generator-args` last. For example,
+   a rerun with both a starting checkpoint and loader overrides is
+
+   ```bash
+   deepposekit train recovered.toml --init-from original-start.keras \
+     --custom-generator my_generator.py --custom-generator-args --split new-labels
+   ```
+
+The recovered TOML keeps the configured seeds, augmentation order, batch
+sizes, and scheduler and stopping rules. The JSON also records the observed
+epoch-end learning rates. A callback checkpoint reports the rate at the
+point where that callback saves it. After a restart, observations may begin
+at the resumed epoch. Republishing a completed backup created before this
+feature embeds the verified TOML. Completed backups created with recipe
+recording preserve both records when republished.
 
 ### Train from a custom labeled dataset
 
