@@ -32,8 +32,10 @@ class _InvalidateTrainingRecipe(Callback):
         super().__init__()
         self.pose_model = pose_model
 
-    def on_train_begin(self, logs=None):
-        self.pose_model._training_files = {}
+    def on_train_batch_begin(self, batch, logs=None):
+        if self.pose_model is not None:
+            self.pose_model._training_files = {}
+            self.pose_model = None
 
 
 class BaseModel:
@@ -183,7 +185,7 @@ class BaseModel:
 
         callbacks = self.activate_callbacks(callbacks)
         if getattr(self, "_training_files", None):
-            # Keep the recipe if Keras rejects the fit before training starts.
+            # Keep the recipe if Keras rejects the fit before the first batch.
             callbacks.insert(0, _InvalidateTrainingRecipe(self))
         return self.train_model.fit(
             train_generator,

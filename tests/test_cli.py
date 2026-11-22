@@ -378,8 +378,12 @@ class WorkflowTests(unittest.TestCase):
             compile=False,
         )
         model.compile("adam", "mse", jit_compile=False)
-        with self.assertRaisesRegex(TypeError, "unsupported_argument"):
-            model.fit(batch_size=2, unsupported_argument=True)
+        for options, error in (
+            ({"unsupported_argument": True}, "unsupported_argument"),
+            ({"initial_epoch": "invalid"}, "cannot be interpreted as an integer"),
+        ):
+            with self.subTest(options=options), self.assertRaisesRegex(TypeError, error):
+                model.fit(batch_size=2, verbose=0, **options)
         unchanged = self.path / "python-unchanged.keras"
         model.save(unchanged)
         for flag in ("--training-config", "--training-settings"):
