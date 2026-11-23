@@ -158,7 +158,9 @@ class ReviewTools(unittest.TestCase):
         nested = self.succeeds("imgaug", "toml", "BlendAlpha")
         (entry,) = tomllib.loads(nested)["generator"]["augmenter"]
         self.assertEqual(entry["foreground"][0]["name"], "GaussianBlur")
-        self.assertEqual(invoke("imgaug", "toml", "SomeOf")[0], 1)
+        some = self.succeeds("imgaug", "toml", "SomeOf")
+        (entry,) = tomllib.loads(some)["generator"]["augmenter"]
+        self.assertEqual(entry["name"], "SomeOf")
         with self.assertRaisesRegex(ValueError, "axis must be"):
             build_augmenters(data, [{"name": "FlipAxis", "axis": 2, "p": 1.0}])
 
