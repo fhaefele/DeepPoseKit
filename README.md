@@ -403,10 +403,14 @@ deepposekit imgaug preview --annotations fly-annotations.h5 \
 The locked environment uses `imgaug` 0.4.0. The `imaug` 0.4.3 fork
 provides the same Python imports and ran the GSOR augmentation recipe on
 Python 3.12 with NumPy 1.26 and 2.5. A shared seed produced different
-augmented images and keypoints across the two distributions. The `imaug`
-release also installs
-both GUI and headless OpenCV wheels, which share the `cv2` namespace. Keep
-the locked dependency for existing recipes. See the
+augmented images and keypoints across the two distributions.
+
+The published `imaug` wheel requires both OpenCV variants, which share the
+`cv2` namespace. Removing its `opencv-python-headless` requirement in a
+trial build resolved a single `opencv-python` wheel for DeepPoseKit and
+Batlab, including the defocus blur dependency. The trial matched the
+published `imaug` output on the GSOR probe. Use the existing lock until
+a release provides corrected packaging. See the
 [imaug investigation results](https://github.com/fhaefele/DeepPoseKit/pull/49)
 and the [OpenCV wheel installation guidance](https://pypi.org/project/opencv-python/).
 
