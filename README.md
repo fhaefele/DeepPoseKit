@@ -337,18 +337,26 @@ The short training comparison resized the GSOR frames to 256×256 and used
 the same 696/77 train/validation split, seeds of 1, initial weights, Adam
 and mean squared error, and two-stack StackedDenseNet with growth rate 16,
 three transitions, and no pretraining. Each run took three epochs of
-48 batches with four samples per batch. The last-epoch validation
-heatmap loss was 222.15 for imgaug and 223.68 for Albumentations. Mean
-and median Euclidean keypoint errors over 1,105 valid validation points
-were 30.62 and 24.09 px for imgaug and 59.04 and 38.96 px for
-Albumentations. The original imgaug pipeline needed a process-local
-`np.bool = np.bool_` alias for `OneOf` and `imagecorruptions==1.1.2`
-with `setuptools==80.9.0` for the defocus branch.
+48 batches with four samples per batch and one training worker. Euclidean
+keypoint error is measured in 256×256 proxy pixels over 1,105 valid
+validation points.
+
+| Prototype version | Backend | Last validation heatmap loss | Mean keypoint error (px) | Median keypoint error (px) |
+| --- | --- | ---: | ---: | ---: |
+| Initial prototype (`6bb448f`), generator epoch counter | imgaug | 222.15 | 30.62 | 24.09 |
+| Initial prototype (`6bb448f`), generator epoch counter | Albumentations | 223.68 | 59.04 | 38.96 |
+| Revised prototype (`37f0d70`), Keras epoch callback | imgaug | 225.02 | 78.96 | 44.71 |
+| Revised prototype (`37f0d70`), Keras epoch callback | Albumentations | 223.64 | 53.46 | 36.53 |
+
+The imgaug pipeline needed a process-local `np.bool = np.bool_` alias for
+`OneOf` and `imagecorruptions==1.1.2` with `setuptools==80.9.0` for
+defocus blur. The revised prototype changes Albumentations epoch seeds.
+The imgaug baseline also varied under the same settings. The opposite
+rankings leave the relative keypoint accuracy inconclusive.
 
 Keep imgaug as the default. The prototype makes the GSOR recipe and
 skeleton handling available for follow-up comparisons. The archived
-release requires a manual OpenCV setup, and the single short run had
-higher validation keypoint error. Revisit adoption if a maintained
+release requires a manual OpenCV setup. Revisit adoption if a maintained
 dependency can share a single OpenCV wheel and larger matched runs
 support migration.
 
