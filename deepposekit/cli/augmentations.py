@@ -1,4 +1,4 @@
-"""Discover and preview the same imgaug pipelines used by training."""
+"""Build and preview training augmentation pipelines."""
 
 from inspect import signature
 import json
@@ -9,6 +9,7 @@ import tomllib
 import imgaug.augmenters as iaa
 import numpy as np
 
+from deepposekit.augment.albumentations import AlbumentationsAugmenter
 from deepposekit.cli.components import builtin_class, named_list
 
 
@@ -49,6 +50,25 @@ def build_augmenters(data, specifications):
         _augmenter(data, *spec)
         for spec in named_list(specifications, "[generator].augmenter")
     ]
+
+
+def augmentation_backend(generator):
+    backend = generator.get("augmentation_backend", "imgaug")
+    if backend not in ("imgaug", "albumentations"):
+        raise ValueError(
+            '[generator].augmentation_backend must be "imgaug" or "albumentations"'
+        )
+    return backend
+
+
+def build_training_augmenter(data, specifications, backend, *, random_seed=None):
+    if isinstance(specifications, list) and not specifications:
+        return None
+    if backend == "albumentations":
+        return AlbumentationsAugmenter(
+            data.swap_index, specifications, random_seed=random_seed
+        )
+    return build_augmenters(data, specifications)
 
 
 def _list():
@@ -148,7 +168,7 @@ def _inputs(args):
         isinstance(spec, dict) for spec in specifications
     ):
         raise ValueError("Each --augment must be a TOML inline table containing 'name'")
-    return source, specifications
+    return source, specifications, augmentation_backend(generator)
 
 
 def _variants(pipeline, image, points, samples):
@@ -183,7 +203,7 @@ def _preview(args):
     from deepposekit.cli.operations import output_file
     from deepposekit.cli.render import require_display
 
-    source, specifications = _inputs(args)
+    source, specifications, backend = _inputs(args)
     output = None
     overwrite = args.overwrite
     if args.output is None:
@@ -235,17 +255,21 @@ def _preview(args):
         frame = int(eligible[0]) if args.frame is None else args.frame
         if frame not in eligible:
             raise ValueError(f"Frame {frame} is unavailable in {selection}")
-        _render_preview(args, data, frame, specifications, output, overwrite)
+        _render_preview(args, data, frame, specifications, backend, output, overwrite)
 
 
-def _render_preview(args, data, frame, specifications, output, overwrite):
+def _render_preview(args, data, frame, specifications, backend, output, overwrite):
     from matplotlib import pyplot as plt
 
     from deepposekit.cli.render import display_or_save, skeleton_edges
 
-    pipeline = iaa.Sequential(build_augmenters(data, specifications))
-    if args.seed is not None:
-        pipeline.seed_(args.seed)
+    pipeline = build_training_augmenter(
+        data, specifications, backend, random_seed=args.seed
+    )
+    if backend == "imgaug":
+        pipeline = iaa.Sequential(pipeline)
+        if args.seed is not None:
+            pipeline.seed_(args.seed)
     image = data.get_images([frame])
     points = data.get_keypoints([frame]).astype(float)
     points[np.any(points < 0, axis=-1)] = np.nan

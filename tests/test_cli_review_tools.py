@@ -1,4 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
+from copy import deepcopy
+from importlib.util import find_spec
 import csv
 from io import StringIO
 from pathlib import Path
@@ -11,6 +14,7 @@ import h5py
 import numpy as np
 import pandas as pd
 
+from deepposekit.augment.albumentations import AlbumentationsAugmenter
 from deepposekit.cli import main
 from deepposekit.cli.augmentations import build_augmenters
 from deepposekit.io import (
@@ -161,6 +165,79 @@ class ReviewTools(unittest.TestCase):
         self.assertEqual(invoke("imgaug", "toml", "SomeOf")[0], 1)
         with self.assertRaisesRegex(ValueError, "axis must be"):
             build_augmenters(data, [{"name": "FlipAxis", "axis": 2, "p": 1.0}])
+
+    @unittest.skipUnless(
+        find_spec("albumentations"), "optional Albumentations experiment"
+    )
+    def test_albumentations_preview_fixed_labels_and_missing_points(self):
+        recipe = (
+            '[data]\nannotations = "annotations.h5"\n[generator]\n'
+            'augmentation_backend = "albumentations"\n'
+            'augmenter = [{name = "FlipAxis", axis = 1, p = 1.0}]\n'
+        )
+        config = self.path / "albumentations.toml"
+        config.write_text(recipe)
+        output = self.path / "albumentations.png"
+        self.succeeds(
+            "imgaug", "preview", "--config", config, "--seed", 4, "--output", output
+        )
+        self.assertGreater(output.stat().st_size, 100)
+
+        pipeline = AlbumentationsAugmenter(
+            [1, 0],
+            [
+                {
+                    "name": "Sequential",
+                    "p": 1,
+                    "transforms": [
+                        {"name": "FlipAxis", "axis": 1, "p": 1},
+                        {"name": "Affine", "translate_px": {"x": 4}, "p": 1},
+                    ],
+                }
+            ],
+            random_seed=4,
+        )
+        images, points = pipeline(
+            images=self.images[:3],
+            keypoints=np.array(
+                [
+                    [[3.0, 2.0], [8.0, 7.0]],
+                    [[3.0, 2.0], [-1.0, 7.0]],
+                    [[-99999.0, 2.0], [np.nan, np.nan]],
+                ]
+            ),
+        )
+        np.testing.assert_array_equal(images[0, :, 4:], self.images[0, :, :3:-1])
+        np.testing.assert_array_equal(points[0], [[27, 7], [32, 2]])
+        np.testing.assert_array_equal(points[1], [[np.nan, np.nan], [32, 2]])
+        self.assertTrue(np.isnan(points[2]).all())
+
+    @unittest.skipUnless(
+        find_spec("albumentations"), "optional Albumentations experiment"
+    )
+    def test_albumentations_draws_are_independent_of_batch_order_and_worker(self):
+        pipeline = AlbumentationsAugmenter(
+            [1, 0],
+            [{"name": "Affine", "rotate": [-20, 20], "p": 1}],
+            random_seed=4,
+        )
+
+        def augment(first, count, augmenter=pipeline, epoch=0):
+            return augmenter(
+                images=self.images[first : first + count],
+                keypoints=self.points[first : first + count],
+                sample_indices=range(first, first + count),
+                epoch=epoch,
+            )
+
+        batch = augment(0, 8)
+        self.assertFalse(np.array_equal(batch[1], augment(0, 8, epoch=1)[1]))
+        np.testing.assert_array_equal(augment(0, 8, deepcopy(pipeline))[1], batch[1])
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(augment, index, 1) for index in range(8)]
+            results = [future.result() for future in futures]
+        for target, actual in zip(batch, zip(*results, strict=True), strict=True):
+            np.testing.assert_array_equal(np.concatenate(actual), target)
 
     def test_saved_overlay_geometry_trace_and_failed_replacement(self):
         reader = self.path / "reader.py"

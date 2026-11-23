@@ -19,6 +19,7 @@ import imgaug.augmenters as iaa
 import numpy as np
 import copy
 
+from deepposekit.augment.albumentations import AlbumentationsAugmenter
 from deepposekit.utils.keypoints import draw_confidence_maps
 from deepposekit.io.BaseGenerator import BaseGenerator
 
@@ -53,8 +54,8 @@ class TrainingGenerator(PyDataset):
         as lines drawn between connected keypoints. This can help reduce
         keypoint estimation error when training the network.
     augmenter : class or list, default = None
-        A imgaug.Augmenter, or list of imgaug.Augmenter
-        for applying augmentations to images and keypoints.
+        An imgaug augmenter, list of imgaug augmenters, or experimental
+        AlbumentationsAugmenter for applying augmentations to images and keypoints.
         Default is None, which applies no augmentations.
     shuffle : bool, default = True
         Whether to randomly shuffle the data.
@@ -117,14 +118,15 @@ class TrainingGenerator(PyDataset):
             raise ValueError("`validation_split` must be >=0 and <1")
         self.validation = False
         self.confidence = True
+        self._augmentation_epoch = 0
         self._init_augmenter(augmenter)
         self._init_data(generator)
         self.on_epoch_end()
 
     def _init_augmenter(self, augmenter):
-        if isinstance(augmenter, type(None)):
-            self.augmenter = augmenter
-        elif isinstance(augmenter, iaa.Augmenter):
+        if augmenter is None or isinstance(
+            augmenter, (iaa.Augmenter, AlbumentationsAugmenter)
+        ):
             self.augmenter = augmenter
         elif isinstance(augmenter, list):
             if isinstance(augmenter[0], iaa.Augmenter):
@@ -137,8 +139,8 @@ class TrainingGenerator(PyDataset):
                 )
         else:
             raise ValueError(
-                """augmenter must be class
-                             Augmenter, list of Augmenters, or None"""
+                "augmenter must be an imgaug augmenter, a list of imgaug augmenters, "
+                "an AlbumentationsAugmenter, or None"
             )
 
     def _init_data(self, generator):
@@ -237,7 +239,7 @@ class TrainingGenerator(PyDataset):
         self.confidence = confidence
         self.on_epoch_end()
         self_copy = copy.deepcopy(self)
-        if self.augmenter is not None:
+        if isinstance(self_copy.augmenter, iaa.Augmenter):
             self_copy.augmenter.reseed()
         return self_copy
 
@@ -258,6 +260,8 @@ class TrainingGenerator(PyDataset):
 
     def on_epoch_end(self):
         """Updates indexes after each epoch"""
+        if isinstance(self.augmenter, AlbumentationsAugmenter):
+            self._augmentation_epoch += 1
         self.train_range = np.arange(self.n_train)
         self.val_range = np.arange(self.n_validation)
         if self.shuffle:
@@ -271,7 +275,14 @@ class TrainingGenerator(PyDataset):
             batch_index = self.train_index[indexes]
         return self.generator[batch_index]
 
-    def augment(self, images, keypoints):
+    def augment(self, images, keypoints, *, sample_indices=None):
+        if isinstance(self.augmenter, AlbumentationsAugmenter):
+            return self.augmenter(
+                images=images,
+                keypoints=keypoints,
+                epoch=self._augmentation_epoch,
+                sample_indices=sample_indices,
+            )
         images_aug = []
         keypoints_aug = []
         for idx in range(images.shape[0]):
@@ -290,7 +301,10 @@ class TrainingGenerator(PyDataset):
         """Generates data containing batch_size samples"""
         X, y = self.load_batch(indexes)
         if self.augmenter is not None and not self.validation:
-            X, y = self.augment(X, y)
+            if isinstance(self.augmenter, AlbumentationsAugmenter):
+                X, y = self.augment(X, y, sample_indices=self.train_index[indexes])
+            else:
+                X, y = self.augment(X, y)
         if self.confidence:
             y = draw_confidence_maps(
                 images=X,

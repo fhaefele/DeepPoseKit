@@ -140,8 +140,8 @@ options use the Python argument names.
 
 Optimizer, loss, and metric specifications accept Keras names or tables
 containing a built-in name and its parameters. `augmenter` and `callbacks`
-take ordered arrays of names or tables. Augmenters use imgaug classes and
-DeepPoseKit's `FlipAxis`. Callbacks use Keras classes and DeepPoseKit's
+take ordered arrays of names or tables. The default augmentation backend uses
+imgaug classes and DeepPoseKit's `FlipAxis`. Callbacks use Keras classes and DeepPoseKit's
 `Logger` and `ModelCheckpoint`. Use the Python API to supply custom objects.
 Commands that create an output require `--overwrite` to replace it.
 Checkpoint callback paths may use Keras placeholders such as `{epoch}`.
@@ -211,12 +211,143 @@ deepposekit train fine-tune.toml --init-from best_model_densenet.h5
    ```
 
 The recovered TOML keeps the configured seeds, augmentation order, batch
-sizes, and scheduler and stopping rules. The JSON also records the observed
-epoch-end learning rates. A callback checkpoint reports the rate at the
-point where that callback saves it. After a restart, observations may begin
+sizes, and scheduler and stopping rules. The JSON records the augmentation
+backend, its version when used, and the observed epoch-end learning rates.
+A callback checkpoint reports the rate at the point where that callback saves it. After a restart, observations may begin
 at the resumed epoch. Republishing a completed backup created before this
 feature embeds the verified TOML. Completed backups created with recipe
 recording preserve both records when republished.
+
+### Experimental Albumentations recipe
+
+DeepPoseKit uses imgaug by default. The prototype uses Albumentations 2.0.8,
+the MIT-licensed release from the repository archived in July 2025.
+AlbumentationsX is separately maintained and offers AGPL and commercial
+licensing. Adopting it would require reviewing the terms for DeepPoseKit's
+distribution and downstream users. [Albumentations archive](https://github.com/albumentations-team/albumentations) · [AlbumentationsX licensing](https://github.com/albumentations-team/AlbumentationsX/blob/main/LICENSING.md)
+
+Albumentations and albucore declare a dependency on `opencv-python-headless`.
+DeepPoseKit and imgaug use `opencv-python`. Both wheels provide `cv2` and
+OpenCV's installation instructions call for using a single wheel. For the
+experiment, reuse the locked OpenCV wheel in a disposable environment and
+install the remaining dependencies explicitly. The default installation and
+lockfile continue to use imgaug. [OpenCV wheel installation](https://pypi.org/project/opencv-python/#installation-and-usage)
+
+```bash
+export UV_PROJECT_ENVIRONMENT="$(mktemp -d)/.venv"
+uv sync --locked
+uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" \
+    pydantic==2.14.4 simsimd==6.5.16 stringzilla==5.3.2
+uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" --no-deps \
+    albumentations==2.0.8 albucore==0.0.24
+export NO_ALBUMENTATIONS_UPDATE=1
+```
+
+Set `[generator].augmentation_backend = "albumentations"` and use
+Albumentations transform names and options. The following `[generator]`
+recipe approximates the GSOR notebook pipeline. Combine it with your usual
+data, model, training, and output sections.
+
+```toml
+[generator]
+augmentation_backend = "albumentations"
+downsample_factor = 2
+use_graph = false
+sigma = 5
+validation_split = 0.1
+random_seed = 1
+augmenter = [
+  { name = "FlipAxis", axis = 0, p = 0.5 },
+  { name = "FlipAxis", axis = 1, p = 0.5 },
+  { name = "Sequential", p = 0.5, transforms = [
+    { name = "Affine", scale = { x = [0.95, 1.05], y = [0.95, 1.05] }, translate_percent = { x = [-0.05, 0.05], y = [-0.05, 0.05] }, shear = { x = [-8, 8], y = [-8, 8] }, interpolation = 1, border_mode = 0, fill = 0, p = 1.0 },
+    { name = "Affine", scale = [0.8, 1.2], keep_ratio = true, interpolation = 1, border_mode = 0, fill = 0, p = 1.0 },
+    { name = "Perspective", scale = [0.01, 0.05], keep_size = true, interpolation = 1, border_mode = 0, fill = 0, p = 1.0 },
+    { name = "CLAHE", clip_limit = [1, 4], tile_grid_size = [5, 5], p = 1.0 },
+    { name = "OneOf", p = 1.0, transforms = [
+      { name = "GaussianBlur", sigma_limit = [0.0, 3.0], blur_limit = 0, p = 1.0 },
+      { name = "MotionBlur", blur_limit = [3, 11], allow_shifted = false, p = 1.0 },
+      { name = "Defocus", radius = [3, 6], alias_blur = [0.1, 0.5], p = 1.0 },
+    ] },
+  ] },
+  { name = "Affine", rotate = [-30, 30], interpolation = 1, border_mode = 0, fill = 0, p = 1.0 },
+]
+```
+
+| GSOR operation | Mapping and differences |
+| --- | --- |
+| Vertical then horizontal `FlipAxis` | Independent 50% draws, same order and pixel reflection formula. Each applied flip uses the dataset's swap indices. |
+| `Sometimes(0.5, ...)` and `OneOf` | `Sequential(p=0.5)` runs all children in order when selected. `OneOf(p=1.0)` with equal child weights chooses each blur one-third of the time inside that group, one-sixth overall. |
+| Two affines inside the group | Independent x/y scale 0.95–1.05 and translation ±5%, then isotropic scale 0.8–1.2. Legacy shear shares one ±8° draw across axes. The prototype draws each axis independently. Albumentations truncates fractional translations to integer pixels and computes its own affine matrix. |
+| Perspective | Corner jitter scale 0.01–0.05 and resize back to the input size in both. The corner sampling and matrix and resize conventions differ. The prototype explicitly uses bilinear interpolation and constant zero fill. |
+| CLAHE | Clip limit 1–4 in both. Legacy samples a square tile grid of 3–7 per image. The prototype fixes it at 5×5. The grid values count tiles in OpenCV. |
+| Gaussian blur | Sigma 0–3 in both. Automatic kernel sizing and filtering differ. |
+| Motion blur | Legacy draws a kernel size uniformly from 3–10, then rounds even sizes up. The prototype draws odd sizes uniformly from 3–11 and uses an unshifted kernel. Both draw angles from 0–360° and direction from −1 to 1, with different kernels. |
+| Defocus blur | Legacy severity 1–3 draws one of the radius and alias-blur pairs (3, 0.1), (4, 0.5), and (6, 0.5). Albumentations samples radius 3–6 and alias blur 0.1–0.5 independently. |
+| Final rotation and affine resampling | Always rotates by a draw from ±30°. For all three affines, legacy samples nearest, linear, or cubic interpolation and constant, edge, symmetric, reflect, or wrap padding. The constant fill is sampled from 0–255. The prototype fixes these at linear interpolation and zero fill. Albumentations reflective affine modes duplicate labels, so the prototype excludes them. |
+
+The adapter treats any negative or nonfinite input coordinate as a missing
+annotation. Finite positive coordinates beyond the right or bottom edge
+are passed through. Missing points return to their skeleton slots as NaN
+with zero confidence maps, and edges connected to missing points are skipped.
+Finite points that move outside the frame during augmentation retain their
+coordinates on every side. If an intermediate warp clips an image feature,
+a later warp can move its coordinate back inside the frame while the feature
+remains absent. Validation batches use the original images and points.
+
+Set `[training].random_seed` to seed the augmentation independently of the
+generator's split seed. Augmentation draws for a frame and epoch are stable
+across batch order and worker scheduling. The checkpoint embeds the TOML and
+records `augmentation_backend` and `augmentation_version` in
+`inspect --training-settings`. Rerunning the TOML uses the selected backend.
+Use the version in the run record to audit the installed package. The
+experimental backend checks for 2.0.8 before running a recipe. Replay starts
+a fresh augmentation stream. To migrate a recipe, rewrite the transforms
+and preview the new distribution before training. Reused seed numbers
+produce different draws between libraries.
+
+```bash
+uv run --no-sync deepposekit imgaug preview --config training.toml --seed 1 --output preview.png
+uv run --no-sync deepposekit train training.toml
+uv run --no-sync python -m unittest discover -s tests -k albumentations -v
+```
+
+#### GSOR comparison
+
+The CPU throughput test timed image and keypoint transforms after loading
+96 labeled 1024×1024 grayscale frames into memory. It used one OpenCV thread
+on an Intel Core i7-14700 and three seeds after eight warm-up frames per
+seed. Median throughput was 40.24 frames/s for imgaug and 83.31 frames/s
+for Albumentations (2.07×). The measurements compare complete recipes,
+including their different interpolation, border, and blur choices.
+
+A geometric alignment check placed a synthetic marker at each selected
+annotation coordinate before applying the flips, affines, and perspective
+with bilinear and zero-fill settings. For visible markers ending away from
+the frame edges, the median and maximum distances from the transformed
+keypoints to the marker centroids were 0.210 and 0.506 px (81 markers)
+for imgaug and 0.026 and 1.513 px (82 markers) for Albumentations.
+Intermediate clipping erased three imgaug markers and one Albumentations
+marker whose final coordinates were inside the frame.
+
+The short training comparison resized the GSOR frames to 256×256 and used
+the same 696/77 train/validation split, seeds of 1, initial weights, Adam
+and mean squared error, and two-stack StackedDenseNet with growth rate 16,
+three transitions, and no pretraining. Each run took three epochs of
+48 batches with four samples per batch. The last-epoch validation
+heatmap loss was 222.15 for imgaug and 223.68 for Albumentations. Mean
+and median Euclidean keypoint errors over 1,105 valid validation points
+were 30.62 and 24.09 px for imgaug and 59.04 and 38.96 px for
+Albumentations. The original imgaug pipeline needed a process-local
+`np.bool = np.bool_` alias for `OneOf` and `imagecorruptions==1.1.2`
+with `setuptools==80.9.0` for the defocus branch.
+
+Keep imgaug as the default. The prototype makes the GSOR recipe and
+skeleton handling available for follow-up comparisons. The archived
+release requires a manual OpenCV setup, and the single short run had
+higher validation keypoint error. Revisit adoption if a maintained
+dependency can share a single OpenCV wheel and larger matched runs
+support migration.
 
 ### Train from a custom labeled dataset
 

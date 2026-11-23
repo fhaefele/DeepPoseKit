@@ -67,6 +67,7 @@ def graph_to_edges(graph):
 def draw_graph(keypoints, height, width, output_shape, graph, sigma=1, linewidth=1):
     # One channel for each edge
     keypoints = keypoints.copy()
+    valid = np.isfinite(keypoints).all(axis=1)
     edge_labels = graph_to_edges(graph)
     labels = np.unique(edge_labels)
     out_height = output_shape[0]
@@ -81,7 +82,7 @@ def draw_graph(keypoints, height, width, output_shape, graph, sigma=1, linewidth
         edge_confidence = np.zeros((out_height, out_width, lines.shape[0]))
         zeros = np.zeros((height, width, 1), dtype=np.uint8)
         for jdx, (line_idx, line) in enumerate(zip(lines_idx, lines)):
-            if line >= 0:
+            if line >= 0 and valid[line_idx] and valid[line]:
                 pt1 = keypoints[line_idx]
                 pt2 = keypoints[line]
                 line_map = cv2.line(
@@ -116,7 +117,7 @@ def draw_keypoints(keypoints, height, width, output_shape, sigma=1, normalize=Tr
     xv = np.arange(out_width)
     yv = np.arange(out_height)
     xx, yy = np.meshgrid(xv, yv)
-    for idx in range(n_keypoints):
+    for idx in np.flatnonzero(np.isfinite(keypoints).all(axis=1)):
         keypoint = keypoints[idx]
         gaussian = (yy - keypoint[1]) ** 2
         gaussian += (xx - keypoint[0]) ** 2

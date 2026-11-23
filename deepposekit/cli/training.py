@@ -19,7 +19,10 @@ import keras
 import numpy as np
 
 from deepposekit import callbacks
-from deepposekit.cli.augmentations import build_augmenters
+from deepposekit.cli.augmentations import (
+    augmentation_backend,
+    build_training_augmenter,
+)
 from deepposekit.cli.components import (
     builtin_class,
     config_path,
@@ -121,8 +124,11 @@ def read_training_config(
         custom_generator_args=custom_generator_args,
     )
     generator = _section(
-        source, "generator", _parameters(TrainingGenerator, "generator")
+        source,
+        "generator",
+        _parameters(TrainingGenerator, "generator") | {"augmentation_backend"},
     )
+    augmentation_backend(generator)
     model = source.get("model", {})
     name = model.get("name", "StackedDenseNet") if isinstance(model, dict) else None
     if not isinstance(name, str) or name not in MODELS:
@@ -209,8 +215,12 @@ def _training_generator(config, data, stored=None):
         allowed = _parameters(TrainingGenerator, "generator", "augmenter")
         options.update({key: stored[key] for key in allowed & stored.keys()})
     options.update(config.generator_options)
+    backend = augmentation_backend(options)
+    options.pop("augmentation_backend", None)
     if "augmenter" in options:
-        options["augmenter"] = build_augmenters(data, options["augmenter"]) or None
+        options["augmenter"] = build_training_augmenter(
+            data, options["augmenter"], backend, random_seed=config.random_seed
+        )
     if "downsample_factor" in options:
         _integer(options["downsample_factor"], 0, "[generator].downsample_factor")
     sigma = options.get("sigma", 5)
@@ -613,6 +623,12 @@ class _TrainingRecord(keras.callbacks.Callback):
                 "generator": generator.random_seed,
             },
             "augmenter": config.generator_options.get("augmenter", []),
+            "augmentation_backend": augmentation_backend(config.generator_options),
+            "augmentation_version": (
+                getattr(generator.augmenter, "version", imgaug.__version__)
+                if generator.augmenter is not None
+                else None
+            ),
             "compile": model.train_model.get_compile_config(),
             "initial_learning_rate": _learning_rate(model.train_model),
             "training": training,

@@ -1,5 +1,6 @@
 from contextlib import ExitStack, chdir, redirect_stderr, redirect_stdout
 from importlib.machinery import ModuleSpec
+from importlib.util import find_spec
 from io import StringIO
 import json
 import os
@@ -262,6 +263,42 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertEqual(int(trained.train_model.optimizer.iterations), 1)
 
+    @unittest.skipUnless(
+        find_spec("albumentations"), "optional Albumentations experiment"
+    )
+    def test_albumentations_recipe_records_backend_and_version(self):
+        config = self.path / "albumentations.toml"
+        recipe = (
+            self.config.read_text()
+            .replace(
+                "[generator]\n",
+                '[generator]\naugmentation_backend = "albumentations"\n',
+            )
+            .replace(
+                'checkpoint = "model.keras"', 'checkpoint = "albumentations.keras"'
+            )
+        )
+        config.write_text(recipe)
+        status, _, errors = invoke("train", config)
+        self.assertEqual(status, 0, errors)
+        checkpoint = self.path / "albumentations.keras"
+        status, saved, errors = invoke("inspect", checkpoint, "--training-config")
+        self.assertEqual(status, 0, errors)
+        self.assertEqual(saved, recipe)
+        replay = self.path / "replay-albumentations.toml"
+        replay.write_text(
+            saved.replace('"albumentations.keras"', '"albumentations-replay.keras"')
+        )
+        status, _, errors = invoke("train", replay)
+        self.assertEqual(status, 0, errors)
+        status, saved, errors = invoke(
+            "inspect", self.path / "albumentations-replay.keras", "--training-settings"
+        )
+        self.assertEqual(status, 0, errors)
+        self.assertEqual(json.loads(saved)["augmentation_backend"], "albumentations")
+        self.assertEqual(json.loads(saved)["augmentation_version"], "2.0.8")
+        self.assertIsNone(load_model(checkpoint, compile=False).train_generator)
+
     def test_training_recipe_extracts_exact_toml_and_resolved_settings(self):
         config = self.path / "recipe.toml"
         source = (
@@ -321,6 +358,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(
             settings["augmenter"], [{"name": "FlipAxis", "axis": 1, "p": 1.0}]
         )
+        self.assertEqual(settings["augmentation_backend"], "imgaug")
+        self.assertEqual(settings["augmentation_version"], "0.4.0")
         self.assertEqual(settings["training"]["batch_size"], 2)
         self.assertEqual(settings["training"]["validation_batch_size"], 1)
         self.assertEqual(settings["training"]["epochs"], 2)
