@@ -119,6 +119,7 @@ class TrainingGenerator(PyDataset):
         self.validation = False
         self.confidence = True
         self._augmentation_epoch = 0
+        self._fit_augmentation_epoch = None
         self._init_augmenter(augmenter)
         self._init_data(generator)
         self.on_epoch_end()
@@ -260,7 +261,10 @@ class TrainingGenerator(PyDataset):
 
     def on_epoch_end(self):
         """Updates indexes after each epoch"""
-        if isinstance(self.augmenter, AlbumentationsAugmenter):
+        if (
+            self._fit_augmentation_epoch is None
+            and isinstance(self.augmenter, AlbumentationsAugmenter)
+        ):
             self._augmentation_epoch += 1
         self.train_range = np.arange(self.n_train)
         self.val_range = np.arange(self.n_validation)
@@ -280,7 +284,11 @@ class TrainingGenerator(PyDataset):
             return self.augmenter(
                 images=images,
                 keypoints=keypoints,
-                epoch=self._augmentation_epoch,
+                epoch=(
+                    self._augmentation_epoch
+                    if self._fit_augmentation_epoch is None
+                    else self._fit_augmentation_epoch
+                ),
                 sample_indices=sample_indices,
             )
         images_aug = []

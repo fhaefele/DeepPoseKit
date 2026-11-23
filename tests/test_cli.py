@@ -299,6 +299,56 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(json.loads(saved)["augmentation_version"], "2.0.8")
         self.assertIsNone(load_model(checkpoint, compile=False).train_generator)
 
+    @unittest.skipUnless(
+        find_spec("albumentations"), "optional Albumentations experiment"
+    )
+    def test_albumentations_uses_keras_starting_and_restored_epochs(self):
+        from keras.callbacks import BackupAndRestore
+
+        from deepposekit.augment.albumentations import AlbumentationsAugmenter
+        from deepposekit.io import TrainingGenerator
+        from deepposekit.models import LEAP
+
+        backup_dir = self.path / "albumentations-backup"
+        consumed = []
+
+        def encoded_epoch(augmenter, *, images, keypoints, epoch=0, sample_indices=None):
+            return np.full_like(images, epoch), keypoints
+
+        def fit(epochs, **options):
+            source = DataGenerator(str(self.annotations))
+            augmenter = AlbumentationsAugmenter(
+                source.swap_index, [{"name": "FlipAxis", "axis": 1, "p": 1}],
+                random_seed=1,
+            )
+            dataset = TrainingGenerator(
+                source, downsample_factor=0, use_graph=False, augmenter=augmenter
+            )
+            model = LEAP(dataset, filters=4)
+            model.compile("adam", "mse", run_eagerly=True)
+            train_step = model.train_model.train_step
+
+            def observe(data):
+                consumed.extend(data[0][:, 0, 0, 0].numpy().tolist())
+                return train_step(data)
+
+            with patch.object(model.train_model, "train_step", side_effect=observe):
+                model.fit(
+                    batch_size=2,
+                    steps_per_epoch=1,
+                    epochs=epochs,
+                    n_workers=2,
+                    verbose=0,
+                    callbacks=[BackupAndRestore(backup_dir, delete_checkpoint=False)],
+                    **options,
+                )
+
+        with patch.object(AlbumentationsAugmenter, "__call__", encoded_epoch):
+            fit(epochs=3, initial_epoch=2)
+            fit(epochs=4)
+
+        self.assertEqual(consumed, [2, 2, 3, 3])
+
     def test_training_recipe_extracts_exact_toml_and_resolved_settings(self):
         config = self.path / "recipe.toml"
         source = (

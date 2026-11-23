@@ -296,9 +296,12 @@ a later warp can move its coordinate back inside the frame while the feature
 remains absent. Validation batches use the original images and points.
 
 Set `[training].random_seed` to seed the augmentation independently of the
-generator's split seed. Augmentation draws for a frame and epoch are stable
-across batch order and worker scheduling. The checkpoint embeds the TOML and
-records `augmentation_backend` and `augmentation_version` in
+generator's split seed. At each epoch start, Keras supplies the requested or
+restored epoch number for newly generated batches. Keras can reuse prefetched
+batches across partial epochs (`steps_per_epoch` shorter than a full data
+pass). Setup prefetch under a distribution strategy and partial-epoch
+prefetch can affect the draws a training run consumes. The checkpoint embeds
+the TOML and records `augmentation_backend` and `augmentation_version` in
 `inspect --training-settings`. Rerunning the TOML uses the selected backend.
 Use the version in the run record to audit the installed package. The
 experimental backend checks for 2.0.8 before running a recipe. Replay starts

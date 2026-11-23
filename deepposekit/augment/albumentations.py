@@ -82,6 +82,8 @@ def _transform(library, name, options):
         ]
         if not children:
             raise ValueError(f"{name}.transforms must contain at least one transform")
+        if name == "OneOf" and not any(child.p > 0 for child in children):
+            raise ValueError("OneOf requires at least one child with p greater than 0")
         options["transforms"] = children
     if name in {"Affine", "Perspective"} and (
         options.get("fit_output") or not options.get("keep_size", True)

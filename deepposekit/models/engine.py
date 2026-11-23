@@ -20,6 +20,7 @@ from keras import Model
 from keras.callbacks import Callback
 from keras.layers import Input
 
+from deepposekit.augment.albumentations import AlbumentationsAugmenter
 from deepposekit.models.layers.subpixel import SubpixelMaxima2D
 from deepposekit.models.layers.convolutional import Maxima2D
 from deepposekit.utils.image import largest_factor
@@ -36,6 +37,16 @@ class _InvalidateTrainingRecipe(Callback):
         if self.pose_model is not None:
             self.pose_model._training_files = {}
             self.pose_model = None
+
+
+class _SetAugmentationEpoch(Callback):
+    def __init__(self, dataset):
+        super().__init__()
+        self.dataset = dataset
+
+    def on_epoch_begin(self, epoch, logs=None):
+        # Keras has already resolved initial_epoch, including any backup restore.
+        self.dataset._fit_augmentation_epoch = epoch
 
 
 class BaseModel:
@@ -184,6 +195,10 @@ class BaseModel:
                 dataset.max_queue_size = max_queue_size
 
         callbacks = self.activate_callbacks(callbacks)
+        if isinstance(
+            getattr(train_generator, "augmenter", None), AlbumentationsAugmenter
+        ):
+            callbacks.insert(0, _SetAugmentationEpoch(train_generator))
         if getattr(self, "_training_files", None):
             # Keep the recipe if Keras rejects the fit before the first batch.
             callbacks.insert(0, _InvalidateTrainingRecipe(self))

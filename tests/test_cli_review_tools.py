@@ -215,6 +215,25 @@ class ReviewTools(unittest.TestCase):
     @unittest.skipUnless(
         find_spec("albumentations"), "optional Albumentations experiment"
     )
+    def test_albumentations_one_of_rejects_zero_total_weight(self):
+        with self.assertRaisesRegex(ValueError, "OneOf requires at least one child"):
+            AlbumentationsAugmenter(
+                [1, 0],
+                [
+                    {
+                        "name": "OneOf",
+                        "p": 1,
+                        "transforms": [
+                            {"name": "GaussianBlur", "p": 0},
+                            {"name": "MotionBlur", "p": 0},
+                        ],
+                    }
+                ],
+            )
+
+    @unittest.skipUnless(
+        find_spec("albumentations"), "optional Albumentations experiment"
+    )
     def test_albumentations_draws_are_independent_of_batch_order_and_worker(self):
         pipeline = AlbumentationsAugmenter(
             [1, 0],
