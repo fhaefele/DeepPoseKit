@@ -21,10 +21,10 @@ classifiers = [
 dependencies = [
     "argcomplete>=3.5,<4",
     "h5py",
-    "imgaug==0.4.0",
+    "imaug @ git+https://github.com/fhaefele/imaug.git@aae67b11e42d3c380ebccb30d1f7a481598b8f7d",
     "keras==3.15.1",
     "matplotlib",
-    # imgaug 0.4.0 uses NumPy 1.x APIs; TensorFlow 2.21 requires at least 1.26.
+    # Use the same NumPy version range as the GSOR imgaug baseline.
     "numpy>=1.26,<2",
     # OpenCV wheels from 4.12 onward require NumPy 2 on Python 3.12.
     "opencv-python<4.12",

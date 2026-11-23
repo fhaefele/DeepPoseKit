@@ -400,6 +400,13 @@ deepposekit imgaug preview --annotations fly-annotations.h5 \
   --frame 42 --output preview.png
 ```
 
+The lock uses a temporary `fhaefele/imaug` Git pin for augmentation. The fork
+provides the `imgaug` import namespace and installs one `opencv-python` wheel,
+including when defocus blur is used. The same seed can produce different
+augmented images and keypoints from an older `imgaug` run. The packaging
+fix and the follow-up to use an upstream release are tracked in
+[issue #47](https://github.com/fhaefele/DeepPoseKit/issues/47).
+
 ### Review and refine predictions
 
 ```bash
