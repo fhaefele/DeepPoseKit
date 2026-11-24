@@ -406,7 +406,8 @@ deepposekit imgaug preview --annotations fly-annotations.h5 \
 deepposekit predictions view predictions.npy --source video.avi --gray
 deepposekit predictions view predictions.npy --source video.avi --gray \
   --skeleton skeleton.csv --start 40 --stop 100 --output review.mp4 --fps 30
-deepposekit predictions trace predictions.npy --keypoint 0 --output trace.png
+deepposekit predictions trace predictions.npy --keypoint 0 --keypoint 1 \
+  --confidence-threshold 0.2 --output trace.png
 ```
 
 The viewer overlays saved predictions on source frames. Use the same reader
@@ -414,9 +415,14 @@ and preprocessing from prediction, including `--custom-reader` and any forwarded
 arguments. Use `--start` and `--stop` to select a zero-based, half-open frame
 range. For headless review, export an AVI or MP4. `--fps` sets export playback
 speed. The trace plots x, y, confidence, and the x–y trajectory from the
-prediction array. A skeleton CSV or annotation HDF5 supplied with
-`--skeleton` provides edges for overlays or keypoint names for traces. Use
-`--keypoint-name` to select a numeric name that also matches a column index.
+prediction array. Repeat `--keypoint` to overlay keypoints with distinct colors.
+A skeleton CSV or annotation HDF5 supplied with `--skeleton` provides edges
+for overlays or keypoint names for traces. Repeat `--keypoint-name` to select
+by name when a numeric name also matches a column index.
+
+`--confidence-threshold` shades frames at or above the threshold in the x, y,
+and confidence panels. The x–y panel shows those frames as markers connected
+across consecutive qualifying frames. With no threshold, all frames are plotted.
 
 ```bash
 deepposekit predictions outliers predictions.npy --top 50 --output candidates.csv

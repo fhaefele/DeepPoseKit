@@ -358,7 +358,7 @@ deepposekit predictions view predictions.npy --source clip.avi --gray --skeleton
 Plot x, y, confidence, and a keypoint trajectory.
 
 ```text
-deepposekit predictions trace [-h] [--color {auto,always,never}] [--skeleton SKELETON] [--start START] [--stop STOP] [--output OUTPUT] [--overwrite] [--keypoint KEYPOINT | --keypoint-name KEYPOINT_NAME] predictions
+deepposekit predictions trace [-h] [--color {auto,always,never}] [--skeleton SKELETON] [--start START] [--stop STOP] [--output OUTPUT] [--overwrite] [--keypoint KEYPOINT | --keypoint-name KEYPOINT_NAME] [--confidence-threshold CONFIDENCE_THRESHOLD] predictions
 ```
 
 | Argument or flags | Required | Default | Description |
@@ -371,15 +371,16 @@ deepposekit predictions trace [-h] [--color {auto,always,never}] [--skeleton SKE
 | `--stop` | No | — | Stop before this frame. |
 | `--output` | No | — | Save the review output to a file. |
 | `--overwrite` | No | `false` | Replace an existing output. |
-| `--keypoint` | No | `"0"` | Keypoint index or name from a skeleton. |
-| `--keypoint-name` | No | — | Select a skeleton name, including numeric names. |
+| `--keypoint` | No | — | Keypoint index or skeleton name. Repeat to plot more. Defaults to index 0. |
+| `--keypoint-name` | No | — | Skeleton name, including numeric names. Repeat to plot more. |
+| `--confidence-threshold` | No | — | Shade frames at or above this confidence and filter the X–Y trajectory. |
 
 Use at most one of `--keypoint`, `--keypoint-name`.
 
-Plot a keypoint trace and its confidence.
+Compare keypoint traces and highlight confident frames.
 
 ```bash
-deepposekit predictions trace predictions.npy --keypoint 0 --output trace.png
+deepposekit predictions trace predictions.npy --keypoint 0 --keypoint 1 --confidence-threshold 0.2 --output trace.png
 ```
 
 ## deepposekit predictions outliers

@@ -679,6 +679,73 @@ class ReviewTools(unittest.TestCase):
                 )
                 np.testing.assert_array_equal(plot.call_args_list[0].args[2], expected)
 
+    def test_trace_shades_confident_frames_and_filters_multi_keypoint_trajectories(
+        self,
+    ):
+        from unittest.mock import patch
+
+        from matplotlib import pyplot as plt
+
+        values = np.ones((7, 2, 3))
+        values[:, 0, 0] = np.arange(7)
+        values[:, 1, 0] = 10 + np.arange(7)
+        values[:, 0, 2] = [0.9, 0.2, 0.1, 0.4, np.nan, 0.8, 0.9]
+        values[:, 1, 2] = [0.9, 0.1, 0.3, 0.5, 0.1, 0.1, 0.9]
+        predictions = self.path / "poses.npy"
+        np.save(predictions, values)
+        with patch("deepposekit.cli.prediction_tools.display_or_save") as save:
+            self.succeeds(
+                "predictions",
+                "trace",
+                predictions,
+                "--keypoint",
+                0,
+                "--keypoint",
+                1,
+                "--confidence-threshold",
+                0.2,
+                "--start",
+                1,
+                "--stop",
+                6,
+                "--output",
+                self.path / "trace.png",
+            )
+        figure = save.call_args.args[0]
+        self.addCleanup(plt.close, figure)
+        for dimension, axis in enumerate(figure.axes[:3]):
+            self.assertEqual(len(axis.collections), 2)
+            for index, expected_spans in enumerate(
+                (
+                    [(0.5, 1.5), (2.5, 3.5), (4.5, 5.5)],
+                    [(1.5, 3.5)],
+                )
+            ):
+                np.testing.assert_array_equal(
+                    axis.lines[index].get_xdata(), np.arange(1, 6)
+                )
+                np.testing.assert_array_equal(
+                    axis.lines[index].get_ydata(), values[1:6, index, dimension]
+                )
+                spans = [
+                    (path.vertices[:, 0].min(), path.vertices[:, 0].max())
+                    for path in axis.collections[index].get_paths()
+                ]
+                self.assertEqual(spans, expected_spans)
+        xy = figure.axes[3]
+        self.assertEqual(len(xy.lines), 2)
+        for line, expected in zip(
+            xy.lines,
+            (
+                [1, np.nan, 3, np.nan, 5],
+                [np.nan, 12, 13, np.nan, np.nan],
+            ),
+            strict=True,
+        ):
+            self.assertEqual(line.get_marker(), "o")
+            self.assertEqual(line.get_linestyle(), "-")
+            np.testing.assert_array_equal(line.get_xdata(), expected)
+
     def test_virtual_skeleton_protects_backing_relative_to_its_owner(self):
         folder = self.path / "metadata"
         folder.mkdir()

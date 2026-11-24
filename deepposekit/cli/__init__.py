@@ -41,6 +41,13 @@ def _index(value):
     return number
 
 
+def _finite_real(value):
+    number = float(value)
+    if not isfinite(number):
+        raise argparse.ArgumentTypeError("expected a finite number")
+    return number
+
+
 def _positive_real(value):
     number = float(value)
     if not isfinite(number) or number <= 0:
@@ -370,10 +377,19 @@ def make_parser(
     review_options(trace, "png")
     selector = trace.add_mutually_exclusive_group()
     selector.add_argument(
-        "--keypoint", default="0", help="Keypoint index or name from a skeleton."
+        "--keypoint",
+        action="append",
+        help="Keypoint index or skeleton name. Repeat to plot more. Defaults to index 0.",
     )
     selector.add_argument(
-        "--keypoint-name", help="Select a skeleton name, including numeric names."
+        "--keypoint-name",
+        action="append",
+        help="Skeleton name, including numeric names. Repeat to plot more.",
+    )
+    trace.add_argument(
+        "--confidence-threshold",
+        type=_finite_real,
+        help="Shade frames at or above this confidence and filter the X–Y trajectory.",
     )
     outliers = review.add_parser(
         "outliers", help="Rank frames by confidence drops and coordinate jumps."
