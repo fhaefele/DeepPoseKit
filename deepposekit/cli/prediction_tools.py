@@ -1,6 +1,7 @@
 """Review saved DeepPoseKit pose predictions without loading a model."""
 
 import csv
+import re
 from contextlib import closing
 from heapq import nlargest
 from itertools import chain
@@ -94,6 +95,22 @@ def _keypoint(value, total, names, explicit_name):
     return index
 
 
+def _keypoint_indices(spec, total):
+    for item in spec.split(","):
+        match = re.fullmatch(r"([0-9]+)(?:\s*-\s*([0-9]+))?", item.strip())
+        if match is None:
+            raise ValueError(
+                f"Invalid keypoint list {spec!r}. Use indices or ranges such as 0-3,5."
+            )
+        first = int(match[1])
+        last = int(match[2]) if match[2] is not None else first
+        if first > last:
+            raise ValueError(f"Keypoint ranges must be ascending: {item.strip()!r}")
+        if last >= total:
+            raise ValueError(f"Keypoint index must be between 0 and {total - 1}")
+        yield from range(first, last + 1)
+
+
 def _output(args, allowed, *inputs):
     if args.output is None:
         require_display()
@@ -112,21 +129,71 @@ def trace(args):
     predictions = _load_predictions(args.predictions)
     start, stop = _range(args, len(predictions))
     _, names = _skeleton(args.skeleton, predictions.shape[1])
-    index = _keypoint(args.keypoint, predictions.shape[1], names, args.keypoint_name)
+    total = predictions.shape[1]
+    if args.keypoint_name:
+        selected = (_keypoint(None, total, names, name) for name in args.keypoint_name)
+    elif args.keypoints:
+        selected = chain.from_iterable(
+            _keypoint_indices(spec, total) for spec in args.keypoints
+        )
+    else:
+        selected = (
+            _keypoint(value, total, names, None) for value in args.keypoint or ["0"]
+        )
+    labels = {
+        index: str(index) if names is None else names[index] for index in selected
+    }
     output = _output(args, (".png",), args.predictions, args.skeleton)
     from matplotlib import pyplot as plt
 
-    x, y, confidence = predictions[start:stop, index].T
     frames = np.arange(start, stop)
+    threshold = args.confidence_threshold
     figure, grid = plt.subplots(2, 2, figsize=(10, 6), layout="constrained")
-    figure.suptitle(f"Keypoint {index if names is None else names[index]}")
-    for axis, values, label in zip(
-        grid.flat, (x, y, confidence), ("X (px)", "Y (px)", "Confidence"), strict=False
-    ):
-        axis.plot(frames, values)
+    x_axis, y_axis, confidence_axis, trajectory = grid.flat
+    time_axes = (x_axis, y_axis, confidence_axis)
+    for axis, label in zip(time_axes, ("X (px)", "Y (px)", "Confidence"), strict=True):
         axis.set(xlabel="Frame", ylabel=label)
-    trajectory = grid[1, 1]
-    trajectory.plot(x, y)
+
+    if len(labels) <= 20:
+        palette = plt.get_cmap("tab10" if len(labels) <= 10 else "tab20")
+        colors = palette.colors[: len(labels)]
+    else:
+        colors = plt.get_cmap("turbo")(np.linspace(0.05, 0.95, len(labels)))
+
+    for (index, label), color in zip(labels.items(), colors, strict=True):
+        x, y, confidence = predictions[start:stop, index].T
+        x_axis.plot(frames, x, color=color, label=label)
+        y_axis.plot(frames, y, color=color)
+        confidence_axis.plot(frames, confidence, color=color)
+        if threshold is not None:
+            keep = np.isfinite(confidence) & (confidence >= threshold)
+            # Frame centers are integers. Shade each full frame, including isolated hits.
+            edges = np.flatnonzero(np.diff(keep, prepend=False, append=False))
+            starts, stops = edges[::2], edges[1::2]
+            spans = np.column_stack((starts + start - 0.5, stops - starts))
+            if spans.size:
+                for axis in time_axes:
+                    axis.broken_barh(
+                        spans,
+                        (0, 1),
+                        transform=axis.get_xaxis_transform(),
+                        facecolors=color,
+                        alpha=0.15,
+                        linewidth=0,
+                    )
+            x, y = np.where(keep, (x, y), np.nan)
+        trajectory.plot(x, y, color=color, marker="o", markersize=3, linewidth=1)
+
+    if threshold is not None:
+        confidence_axis.axhline(threshold, color="0.4", linestyle="--", linewidth=1)
+    if len(labels) == 1:
+        figure.suptitle(f"Keypoint {next(iter(labels.values()))}")
+    else:
+        figure.suptitle("Keypoint traces")
+        # Older Matplotlib releases discard legend labels starting with "_".
+        legend = x_axis.legend(x_axis.lines, [str(index) for index in labels])
+        for text, label in zip(legend.get_texts(), labels.values(), strict=True):
+            text.set_text(label)
     trajectory.set(xlabel="X (px)", ylabel="Y (px)", title="Image trajectory")
     trajectory.set_aspect("equal", adjustable="datalim")
     trajectory.invert_yaxis()

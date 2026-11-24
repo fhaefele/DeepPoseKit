@@ -44,6 +44,17 @@ class ReferenceTests(unittest.TestCase):
             )
         )
 
+    def test_trace_reference_exposes_numeric_confidence_threshold(self):
+        document = json.loads(
+            invoke("help", "--format", "json", "predictions", "trace")
+        )
+        threshold = next(
+            field
+            for field in document["command"]["arguments"]
+            if field["name"] == "confidence_threshold"
+        )
+        self.assertEqual(threshold["type"], "number")
+
     def test_embedded_reference_uses_its_configured_flags_and_version(self):
         def configure_predict(parser):
             parser.add_argument("--camera", type=int, required=True)

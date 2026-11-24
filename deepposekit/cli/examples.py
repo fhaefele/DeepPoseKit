@@ -71,13 +71,15 @@ EXAMPLES = (
         ),
     ),
     (
-        "Plot a keypoint trace and its confidence.",
+        "Compare keypoint traces and highlight confident frames.",
         (
             "predictions",
             "trace",
             "predictions.npy",
-            "--keypoint",
-            "0",
+            "--keypoints",
+            "0-1",
+            "--confidence-threshold",
+            "0.2",
             "--output",
             "trace.png",
         ),
