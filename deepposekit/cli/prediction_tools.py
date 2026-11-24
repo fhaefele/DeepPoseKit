@@ -190,7 +190,10 @@ def trace(args):
         figure.suptitle(f"Keypoint {next(iter(labels.values()))}")
     else:
         figure.suptitle("Keypoint traces")
-        x_axis.legend(x_axis.lines, labels.values())
+        # Older Matplotlib releases discard legend labels starting with "_".
+        legend = x_axis.legend(x_axis.lines, [str(index) for index in labels])
+        for text, label in zip(legend.get_texts(), labels.values(), strict=True):
+            text.set_text(label)
     trajectory.set(xlabel="X (px)", ylabel="Y (px)", title="Image trajectory")
     trajectory.set_aspect("equal", adjustable="datalim")
     trajectory.invert_yaxis()
