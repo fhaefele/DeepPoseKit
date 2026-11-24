@@ -406,7 +406,7 @@ deepposekit imgaug preview --annotations fly-annotations.h5 \
 deepposekit predictions view predictions.npy --source video.avi --gray
 deepposekit predictions view predictions.npy --source video.avi --gray \
   --skeleton skeleton.csv --start 40 --stop 100 --output review.mp4 --fps 30
-deepposekit predictions trace predictions.npy --keypoint 0 --keypoint 1 \
+deepposekit predictions trace predictions.npy --keypoints 0-1 \
   --confidence-threshold 0.2 --output trace.png
 ```
 
@@ -415,7 +415,9 @@ and preprocessing from prediction, including `--custom-reader` and any forwarded
 arguments. Use `--start` and `--stop` to select a zero-based, half-open frame
 range. For headless review, export an AVI or MP4. `--fps` sets export playback
 speed. The trace plots x, y, confidence, and the x–y trajectory from the
-prediction array. Repeat `--keypoint` to overlay keypoints with distinct colors.
+prediction array. Use `--keypoints 0,1,5` to select individual indices
+or `--keypoints 0-3,5` to include a range. Ranges include both endpoints.
+Repeat `--keypoint` to select indices or skeleton names individually.
 A skeleton CSV or annotation HDF5 supplied with `--skeleton` provides edges
 for overlays or keypoint names for traces. Repeat `--keypoint-name` to select
 by name when a numeric name also matches a column index.

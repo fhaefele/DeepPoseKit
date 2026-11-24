@@ -382,6 +382,12 @@ def make_parser(
         help="Keypoint index or skeleton name. Repeat to plot more. Defaults to index 0.",
     )
     selector.add_argument(
+        "--keypoints",
+        action="append",
+        metavar="LIST",
+        help="Comma-separated zero-based indices or inclusive ranges, e.g. 0-3,5.",
+    )
+    selector.add_argument(
         "--keypoint-name",
         action="append",
         help="Skeleton name, including numeric names. Repeat to plot more.",

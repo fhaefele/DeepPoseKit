@@ -1,6 +1,7 @@
 """Review saved DeepPoseKit pose predictions without loading a model."""
 
 import csv
+import re
 from contextlib import closing
 from heapq import nlargest
 from itertools import chain
@@ -94,6 +95,22 @@ def _keypoint(value, total, names, explicit_name):
     return index
 
 
+def _keypoint_indices(spec, total):
+    for item in spec.split(","):
+        match = re.fullmatch(r"([0-9]+)(?:\s*-\s*([0-9]+))?", item.strip())
+        if match is None:
+            raise ValueError(
+                f"Invalid keypoint list {spec!r}. Use indices or ranges such as 0-3,5."
+            )
+        first = int(match[1])
+        last = int(match[2]) if match[2] is not None else first
+        if first > last:
+            raise ValueError(f"Keypoint ranges must be ascending: {item.strip()!r}")
+        if last >= total:
+            raise ValueError(f"Keypoint index must be between 0 and {total - 1}")
+        yield from range(first, last + 1)
+
+
 def _output(args, allowed, *inputs):
     if args.output is None:
         require_display()
@@ -115,6 +132,10 @@ def trace(args):
     total = predictions.shape[1]
     if args.keypoint_name:
         selected = (_keypoint(None, total, names, name) for name in args.keypoint_name)
+    elif args.keypoints:
+        selected = chain.from_iterable(
+            _keypoint_indices(spec, total) for spec in args.keypoints
+        )
     else:
         selected = (
             _keypoint(value, total, names, None) for value in args.keypoint or ["0"]

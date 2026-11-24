@@ -746,6 +746,50 @@ class ReviewTools(unittest.TestCase):
             self.assertEqual(line.get_linestyle(), "-")
             np.testing.assert_array_equal(line.get_xdata(), expected)
 
+    def test_trace_selects_keypoint_lists_and_inclusive_ranges(self):
+        from unittest.mock import patch
+
+        from matplotlib import pyplot as plt
+
+        predictions = self.path / "poses.npy"
+        np.save(predictions, np.ones((2, 6, 3)))
+        output = self.path / "trace.png"
+        with patch("deepposekit.cli.prediction_tools.display_or_save") as save:
+            self.succeeds(
+                "predictions",
+                "trace",
+                predictions,
+                "--output",
+                output,
+                "--keypoints",
+                "5, 0-2,1",
+                "--keypoints",
+                "4-4",
+            )
+        figure = save.call_args.args[0]
+        self.addCleanup(plt.close, figure)
+        self.assertEqual(
+            [line.get_label() for line in figure.axes[0].lines],
+            ["5", "0", "1", "2", "4"],
+        )
+        for spec, message in (
+            ("0,,1", "Invalid keypoint list"),
+            ("3-1", "must be ascending"),
+            ("0-6", "must be between 0 and 5"),
+        ):
+            with self.subTest(spec=spec):
+                code, _, error = invoke(
+                    "predictions",
+                    "trace",
+                    predictions,
+                    "--output",
+                    output,
+                    "--keypoints",
+                    spec,
+                )
+                self.assertEqual(code, 1)
+                self.assertIn(message, error)
+
     def test_virtual_skeleton_protects_backing_relative_to_its_owner(self):
         folder = self.path / "metadata"
         folder.mkdir()
