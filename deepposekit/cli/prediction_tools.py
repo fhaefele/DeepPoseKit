@@ -190,7 +190,7 @@ def trace(args):
         figure.suptitle(f"Keypoint {next(iter(labels.values()))}")
     else:
         figure.suptitle("Keypoint traces")
-        x_axis.legend()
+        x_axis.legend(x_axis.lines, labels.values())
     trajectory.set(xlabel="X (px)", ylabel="Y (px)", title="Image trajectory")
     trajectory.set_aspect("equal", adjustable="datalim")
     trajectory.invert_yaxis()

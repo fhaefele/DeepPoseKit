@@ -753,6 +753,10 @@ class ReviewTools(unittest.TestCase):
 
         predictions = self.path / "poses.npy"
         np.save(predictions, np.ones((2, 6, 3)))
+        skeleton = self.path / "indexed.csv"
+        skeleton.write_text(
+            "name,parent,swap\n" + "".join(f"_{i},,\n" for i in range(6))
+        )
         output = self.path / "trace.png"
         with patch("deepposekit.cli.prediction_tools.display_or_save") as save:
             self.succeeds(
@@ -761,6 +765,8 @@ class ReviewTools(unittest.TestCase):
                 predictions,
                 "--output",
                 output,
+                "--skeleton",
+                skeleton,
                 "--keypoints",
                 "5, 0-2,1",
                 "--keypoints",
@@ -768,9 +774,11 @@ class ReviewTools(unittest.TestCase):
             )
         figure = save.call_args.args[0]
         self.addCleanup(plt.close, figure)
+        expected = ["_5", "_0", "_1", "_2", "_4"]
+        x_axis = figure.axes[0]
+        self.assertEqual([line.get_label() for line in x_axis.lines], expected)
         self.assertEqual(
-            [line.get_label() for line in figure.axes[0].lines],
-            ["5", "0", "1", "2", "4"],
+            [label.get_text() for label in x_axis.get_legend().get_texts()], expected
         )
         for spec, message in (
             ("0,,1", "Invalid keypoint list"),

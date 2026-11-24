@@ -44,6 +44,7 @@ def _argument(action):
     bounds = {
         "_count": ("integer", {"minimum": 1}),
         "_index": ("integer", {"minimum": 0}),
+        "_finite_real": ("number", {}),
         "_positive_real": ("number", {"exclusive_minimum": 0}),
     }
     display, constraint = bounds.get(
