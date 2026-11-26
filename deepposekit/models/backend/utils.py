@@ -13,14 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import tensorflow as tf
-from keras.config import image_data_format
 import numpy as np
+from keras import ops
+from keras.config import backend, image_data_format
+
+if backend() == "torch":
+    from torch.fft import fft2 as _fft2, ifft2 as _ifft2
+else:
+    from tensorflow.signal import fft2d as _fft2, ifft2d as _ifft2
+
 
 __all__ = [
     "ndims",
     "fix",
     "fft2d",
+    "ifft2d",
     "find_maxima",
     "fftshift1d",
     "gaussian_kernel_1d",
@@ -29,60 +36,59 @@ __all__ = [
 
 
 def normalize_data_format(data_format):
-    data_format = image_data_format() if data_format is None else str(data_format).lower()
+    data_format = (
+        image_data_format() if data_format is None else str(data_format).lower()
+    )
     if data_format not in {"channels_first", "channels_last"}:
         raise ValueError(f"Unknown image data format: {data_format!r}")
     return data_format
 
 
 def ndims(x):
-    return tf.size(tf.shape(x))
+    return ops.ndim(x)
 
 
 def fix(x):
-    x = tf.where(x >= 0, tf.math.floor(x), tf.math.ceil(x))
-    return x
+    return ops.where(x >= 0, ops.floor(x), ops.ceil(x))
 
 
 def fft2d(x):
-    x = tf.cast(x, tf.complex64)
-    x = tf.signal.fft2d(x)
-    return x
+    return _fft2(ops.cast(x, "complex64"))
+
+
+def ifft2d(x):
+    return _ifft2(x)
 
 
 def find_maxima(x):
-
-    col_max = tf.reduce_max(x, axis=1)
-    row_max = tf.reduce_max(x, axis=2)
-
-    cols = tf.cast(tf.argmax(col_max, 1), tf.float32)
-    rows = tf.cast(tf.argmax(row_max, 1), tf.float32)
-    cols = tf.reshape(cols, (-1, 1))
-    rows = tf.reshape(rows, (-1, 1))
-
-    maxima = tf.concat([rows, cols], -1)
-
-    return maxima
+    col_max = ops.max(x, axis=1)
+    row_max = ops.max(x, axis=2)
+    cols = ops.cast(ops.argmax(col_max, axis=1), "float32")
+    rows = ops.cast(ops.argmax(row_max, axis=1), "float32")
+    return ops.stack((rows, cols), axis=-1)
 
 
 def fftshift1d(x, axis=0):
     """Shift a flattened signal and restore its original shape."""
-    x_shape = tf.shape(x)
-    flattened = tf.reshape(x, (-1, 1))
-    shifted = tf.signal.fftshift(flattened, axes=axis)
-    return tf.reshape(shifted, x_shape)
+    x_shape = ops.shape(x)
+    flattened = ops.reshape(x, (-1, 1))
+    if backend() == "tensorflow":
+        from tensorflow.signal import fftshift
+
+        shifted = fftshift(flattened, axes=axis)
+    else:
+        shifted = ops.roll(flattened, ops.shape(flattened)[axis] // 2, axis=axis)
+    return ops.reshape(shifted, x_shape)
 
 
 def gaussian_kernel_1d(size, sigma):
-    size = tf.constant(size, dtype=tf.float32)
-    sigma = tf.constant(sigma, dtype=tf.float32)
-    x = tf.range(-(size // 2), (size // 2) + 1, dtype=tf.float32)
-    kernel = 1 / (sigma * tf.sqrt(2 * np.pi))
-    kernel *= tf.exp(-0.5 * (x / sigma) ** 2)
-    return tf.expand_dims(kernel, axis=-1)
+    sigma = ops.cast(sigma, "float32")
+    x = ops.arange(-(size // 2), (size // 2) + 1, dtype="float32")
+    kernel = 1 / (sigma * ops.sqrt(ops.cast(2 * np.pi, "float32")))
+    kernel = kernel * ops.exp(-0.5 * (x / sigma) ** 2)
+    return ops.expand_dims(kernel, axis=-1)
 
 
 def gaussian_kernel_2d(size, sigma):
     kernel = gaussian_kernel_1d(size, sigma)
-    kernel = tf.matmul(kernel, kernel, transpose_b=True)
-    return kernel
+    return ops.matmul(kernel, ops.transpose(kernel))

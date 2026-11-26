@@ -19,6 +19,7 @@ from deepposekit.io import (
     initialize_dataset,
 )
 from deepposekit.models import StackedDenseNet, load_model
+from deepposekit.models.backend.backend import depth_to_space, space_to_depth
 from deepposekit.models.backend.utils import fftshift1d
 from deepposekit.utils.keypoints import graph_to_edges
 
@@ -39,6 +40,23 @@ class StackedDenseNetWorkflowTests(unittest.TestCase):
             with self.subTest(size=size):
                 values = np.arange(size, dtype=np.float32)
                 np.testing.assert_array_equal(compiled_shift(values), np.fft.fftshift(values))
+
+    def test_subpixel_reshaping_preserves_tensorflow_channel_order(self):
+        images = tf.reshape(tf.range(120, dtype=tf.float32), (1, 4, 6, 5))
+        expected = tf.nn.space_to_depth(images, 2)
+        for data_format in ("channels_first", "channels_last"):
+            with self.subTest(data_format=data_format):
+                if data_format == "channels_first":
+                    source = tf.transpose(images, (0, 3, 1, 2))
+                    downscaled = tf.transpose(expected, (0, 3, 1, 2))
+                else:
+                    source, downscaled = images, expected
+                np.testing.assert_array_equal(
+                    space_to_depth(source, 2, data_format), downscaled
+                )
+                np.testing.assert_array_equal(
+                    depth_to_space(downscaled, 2, data_format), source
+                )
 
     def test_skeleton_parent_graph_resolves_valid_roots_and_rejects_cycles(self):
         graph = np.array([2, 0, -1, 2, 1, -1], dtype=np.float64)

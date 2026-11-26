@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import tensorflow as tf
+from keras import ops
+from keras.backend import standardize_dtype
 from keras.config import floatx
 
 from deepposekit.models.backend.utils import gaussian_kernel_2d, normalize_data_format
@@ -41,6 +42,8 @@ def resize_images(x, height_factor, width_factor, interpolation, data_format):
     # Raises
         ValueError: if `data_format` is neither `"channels_last"` or `"channels_first"`.
     """
+    import tensorflow as tf
+
     if interpolation == "nearest":
         tf_resize = tf.compat.v1.image.resize_nearest_neighbor
     elif interpolation == "bilinear":
@@ -97,20 +100,20 @@ def resize_images(x, height_factor, width_factor, interpolation, data_format):
 
 def _find_maxima(x, coordinate_scale=1, confidence_scale=255.0):
 
-    x = tf.cast(x, floatx())
+    x = ops.cast(x, floatx())
 
-    col_max = tf.reduce_max(x, axis=1)
-    row_max = tf.reduce_max(x, axis=2)
+    col_max = ops.max(x, axis=1)
+    row_max = ops.max(x, axis=2)
 
-    maxima = tf.reduce_max(col_max, 1)
-    maxima = tf.expand_dims(maxima, -2) / confidence_scale
+    maxima = ops.max(col_max, 1)
+    maxima = ops.expand_dims(maxima, -2) / confidence_scale
 
-    cols = tf.cast(tf.argmax(col_max, -2), floatx())
-    rows = tf.cast(tf.argmax(row_max, -2), floatx())
-    cols = tf.expand_dims(cols, -2) * coordinate_scale
-    rows = tf.expand_dims(rows, -2) * coordinate_scale
+    cols = ops.cast(ops.argmax(col_max, -2), floatx())
+    rows = ops.cast(ops.argmax(row_max, -2), floatx())
+    cols = ops.expand_dims(cols, -2) * coordinate_scale
+    rows = ops.expand_dims(rows, -2) * coordinate_scale
 
-    maxima = tf.concat([cols, rows, maxima], -2)
+    maxima = ops.concatenate([cols, rows, maxima], -2)
 
     return maxima
 
@@ -126,13 +129,13 @@ def find_maxima(x, coordinate_scale=1, confidence_scale=255.0, data_format=None)
         ValueError: if `data_format` is neither `"channels_last"` or `"channels_first"`.
     """
     if data_format == "channels_first":
-        x = tf.transpose(x, [0, 2, 3, 1])
+        x = ops.transpose(x, [0, 2, 3, 1])
         x = _find_maxima(x, coordinate_scale, confidence_scale)
-        x = tf.transpose(x, [0, 2, 1])
+        x = ops.transpose(x, [0, 2, 1])
         return x
     elif data_format == "channels_last":
         x = _find_maxima(x, coordinate_scale, confidence_scale)
-        x = tf.transpose(x, [0, 2, 1])
+        x = ops.transpose(x, [0, 2, 1])
         return x
     else:
         raise ValueError("Invalid data_format:", data_format)
@@ -143,30 +146,30 @@ def _find_subpixel_maxima(
 ):
 
     kernel = gaussian_kernel_2d(kernel_size, sigma)
-    kernel = tf.expand_dims(kernel, 0)
+    kernel = ops.expand_dims(kernel, 0)
 
-    x_shape = tf.shape(x)
+    x_shape = ops.shape(x)
     rows = x_shape[1]
     cols = x_shape[2]
 
-    max_vals = tf.reduce_max(tf.reshape(x, [-1, rows * cols]), axis=1)
-    max_vals = tf.reshape(max_vals, [-1, 1]) / confidence_scale
+    max_vals = ops.max(ops.reshape(x, [-1, rows * cols]), axis=1)
+    max_vals = ops.reshape(max_vals, [-1, 1]) / confidence_scale
 
     row_pad = rows // 2 - kernel_size // 2
     col_pad = cols // 2 - kernel_size // 2
     padding = [[0, 0], [row_pad, row_pad - 1], [col_pad, col_pad - 1]]
-    kernel = tf.pad(kernel, padding)
+    kernel = ops.pad(kernel, padding)
 
     row_center = row_pad + (kernel_size // 2)
     col_center = col_pad + (kernel_size // 2)
-    center = tf.stack([row_center, col_center])
-    center = tf.expand_dims(center, 0)
-    center = tf.cast(center, dtype=tf.float32)
+    center = ops.stack([row_center, col_center])
+    center = ops.expand_dims(center, 0)
+    center = ops.cast(center, dtype="float32")
 
     shifts = _upsampled_registration(x, kernel, upsample_factor)
     shifts = center - shifts
     shifts *= coordinate_scale
-    maxima = tf.concat([shifts[:, ::-1], max_vals], -1)
+    maxima = ops.concatenate([ops.flip(shifts, axis=-1), max_vals], -1)
 
     return maxima
 
@@ -190,31 +193,31 @@ def find_subpixel_maxima(
         ValueError: if `data_format` is neither `"channels_last"` or `"channels_first"`.
     """
     if data_format == "channels_first":
-        x = tf.transpose(x, [0, 2, 3, 1])
-        x_shape = tf.shape(x)
+        x = ops.transpose(x, [0, 2, 3, 1])
+        x_shape = ops.shape(x)
         batch = x_shape[0]
         row = x_shape[1]
         col = x_shape[2]
         channels = x_shape[3]
-        x = tf.transpose(x, [0, 3, 1, 2])
-        x = tf.reshape(x, [batch * channels, row, col])
+        x = ops.transpose(x, [0, 3, 1, 2])
+        x = ops.reshape(x, [batch * channels, row, col])
         x = _find_subpixel_maxima(
             x, kernel_size, sigma, upsample_factor, coordinate_scale, confidence_scale
         )
-        x = tf.reshape(x, [batch, channels, 3])
+        x = ops.reshape(x, [batch, channels, 3])
         return x
     elif data_format == "channels_last":
-        x_shape = tf.shape(x)
+        x_shape = ops.shape(x)
         batch = x_shape[0]
         row = x_shape[1]
         col = x_shape[2]
         channels = x_shape[3]
-        x = tf.transpose(x, [0, 3, 1, 2])
-        x = tf.reshape(x, [batch * channels, row, col])
+        x = ops.transpose(x, [0, 3, 1, 2])
+        x = ops.reshape(x, [batch * channels, row, col])
         x = _find_subpixel_maxima(
             x, kernel_size, sigma, upsample_factor, coordinate_scale, confidence_scale
         )
-        x = tf.reshape(x, [batch, channels, 3])
+        x = ops.reshape(x, [batch, channels, 3])
 
         return x
     else:
@@ -222,56 +225,39 @@ def find_subpixel_maxima(
 
 
 def _preprocess_conv2d_input(x, data_format):
-    """Transpose and cast the input before the conv2d.
-    # Arguments
-        x: input tensor.
-        data_format: string, `"channels_last"` or `"channels_first"`.
-    # Returns
-        A tensor.
-    """
-    if x.dtype == tf.float64:
-        x = tf.cast(x, "float32")
+    if standardize_dtype(x.dtype) == "float64":
+        x = ops.cast(x, "float32")
     if data_format == "channels_first":
-        # TF uses the last dimension as channel dimension,
-        # instead of the 2nd one.
-        # TH input shape: (samples, input_depth, rows, cols)
-        # TF input shape: (samples, rows, cols, input_depth)
-        x = tf.transpose(x, (0, 2, 3, 1))
+        x = ops.transpose(x, (0, 2, 3, 1))
     return x
 
 
 def _postprocess_conv2d_output(x, data_format):
-    """Transpose and cast the output from conv2d if needed.
-    # Arguments
-        x: A tensor.
-        data_format: string, `"channels_last"` or `"channels_first"`.
-    # Returns
-        A tensor.
-    """
-
     if data_format == "channels_first":
-        x = tf.transpose(x, (0, 3, 1, 2))
-
+        x = ops.transpose(x, (0, 3, 1, 2))
     if floatx() == "float64":
-        x = tf.cast(x, "float64")
+        x = ops.cast(x, "float64")
     return x
 
 
 def depth_to_space(input, scale, data_format=None):
-    """ Uses phase shift algorithm to convert
-    channels/depth to spatial resolution """
+    """Move channels into space in the original TensorFlow offset-major order."""
     data_format = normalize_data_format(data_format)
-    input = _preprocess_conv2d_input(input, data_format)
-    out = tf.nn.depth_to_space(input, scale)
-    out = _postprocess_conv2d_output(out, data_format)
-    return out
+    x = _preprocess_conv2d_input(input, data_format)
+    batch, rows, cols, depth = ops.shape(x)
+    channels = depth // (scale**2)
+    x = ops.reshape(x, (batch, rows, cols, scale, scale, channels))
+    x = ops.transpose(x, (0, 1, 3, 2, 4, 5))
+    x = ops.reshape(x, (batch, rows * scale, cols * scale, channels))
+    return _postprocess_conv2d_output(x, data_format)
 
 
 def space_to_depth(input, scale, data_format=None):
-    """ Uses phase shift algorithm to convert
-    spatial resolution to channels/depth """
+    """Move spatial offsets into channels, reversing depth_to_space."""
     data_format = normalize_data_format(data_format)
-    input = _preprocess_conv2d_input(input, data_format)
-    out = tf.nn.space_to_depth(input, scale)
-    out = _postprocess_conv2d_output(out, data_format)
-    return out
+    x = _preprocess_conv2d_input(input, data_format)
+    batch, rows, cols, channels = ops.shape(x)
+    x = ops.reshape(x, (batch, rows // scale, scale, cols // scale, scale, channels))
+    x = ops.transpose(x, (0, 1, 3, 2, 4, 5))
+    x = ops.reshape(x, (batch, rows // scale, cols // scale, channels * scale**2))
+    return _postprocess_conv2d_output(x, data_format)
