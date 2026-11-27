@@ -12,7 +12,6 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import h5py
-import keras
 import numpy as np
 from fixtures.capture_legacy_reference import (
     ASSET_HASHES,
@@ -24,6 +23,8 @@ from fixtures.capture_legacy_reference import (
 
 from deepposekit.io import DataGenerator, TrainingGenerator
 from deepposekit.models import StackedDenseNet, load_legacy_weights, load_model
+
+import keras
 
 REFERENCE_DIR = os.environ.get("DPK_LEGACY_REFERENCE_DIR")
 

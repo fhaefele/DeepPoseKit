@@ -1,10 +1,11 @@
 """DeepPoseKit command line and shell completion."""
 
 import argparse
+import os
+import sys
 from functools import partial
 from math import isfinite
 from pathlib import Path
-import sys
 
 import argcomplete
 from argcomplete.completers import DirectoriesCompleter, FilesCompleter
@@ -673,7 +674,12 @@ def main(
         "doctor",
     } or (args.command == "dataset" and args.dataset_command == "prelabel")
     try:
-        if executable and cuda_module is not None and needs_cuda:
+        if (
+            executable
+            and cuda_module is not None
+            and needs_cuda
+            and os.environ.get("KERAS_BACKEND") == "tensorflow"
+        ):
             from _deepposekit_gpu import prepare_cuda
 
             main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)

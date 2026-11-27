@@ -7,7 +7,8 @@ from __future__ import print_function
 import json
 import warnings
 import numpy as np
-import tensorflow.keras as keras
+import keras
+from keras.applications.imagenet_utils import preprocess_input as _keras_preprocess_input
 
 CLASS_INDEX = None
 CLASS_INDEX_PATH = ('https://storage.googleapis.com/download.tensorflow.org/'
@@ -110,40 +111,7 @@ def _preprocess_symbolic_input(x, data_format, mode, **kwargs):
         Preprocessed tensor.
     """
 
-    if mode == 'tf':
-        x /= 127.5
-        x -= 1.
-        return x
-
-    if mode == 'torch':
-        x /= 255.
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
-    else:
-        if data_format == 'channels_first':
-            # 'RGB'->'BGR'
-            if backend.ndim(x) == 3:
-                x = x[::-1, ...]
-            else:
-                x = x[:, ::-1, ...]
-        else:
-            # 'RGB'->'BGR'
-            x = x[..., ::-1]
-        mean = [103.939, 116.779, 123.68]
-        std = None
-
-    mean_tensor = backend.constant(-np.array(mean))
-
-    # Zero-center by mean pixel
-    if backend.dtype(x) != backend.dtype(mean_tensor):
-        x = backend.bias_add(
-            x, backend.cast(mean_tensor, backend.dtype(x)),
-            data_format=data_format)
-    else:
-        x = backend.bias_add(x, mean_tensor, data_format)
-    if std is not None:
-        x /= std
-    return x
+    return _keras_preprocess_input(x, data_format=data_format, mode=mode)
 
 
 def preprocess_input(x, data_format=None, mode='caffe', **kwargs):
@@ -324,7 +292,7 @@ def correct_pad(backend, inputs, kernel_size):
         A tuple.
     """
     img_dim = 2 if backend.image_data_format() == 'channels_first' else 1
-    input_size = backend.int_shape(inputs)[img_dim:(img_dim + 2)]
+    input_size = inputs.shape[img_dim:(img_dim + 2)]
 
     if isinstance(kernel_size, int):
         kernel_size = (kernel_size, kernel_size)

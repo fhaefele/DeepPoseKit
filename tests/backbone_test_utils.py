@@ -7,13 +7,14 @@ import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import keras
 import numpy as np
 from fixtures.backbone_reference import BACKBONES, create_annotations
 
 from deepposekit import models
 from deepposekit.io import DataGenerator, TrainingGenerator
 from deepposekit.models import load_model
+
+import keras
 
 SOURCE_REVISION = "cecdb0c8c364ea049a3b705275ae71a2f366d4da"
 

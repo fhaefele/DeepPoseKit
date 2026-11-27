@@ -3,7 +3,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import h5py
-import keras
 import numpy as np
 from backbone_test_utils import BackboneWorkflowMixin
 
@@ -11,6 +10,8 @@ from deepposekit.io import TrainingGenerator
 from deepposekit.io.BaseGenerator import BaseGenerator
 from deepposekit.models import DeepLabCut, load_model
 from deepposekit.models._checkpoint import assign_legacy_weights, normalize_legacy_graph
+
+import keras
 
 
 class MemoryAnnotations(BaseGenerator):
@@ -70,8 +71,12 @@ class DeepLabCutWorkflowTests(unittest.TestCase):
                         weights=None,
                     )
                     frames = annotations.images[:1]
-                    heatmaps = model.train_model(frames, training=False).numpy()
-                    predictions = model.predict_model(frames, training=False).numpy()
+                    heatmaps = keras.ops.convert_to_numpy(
+                        model.train_model(frames, training=False)
+                    )
+                    predictions = keras.ops.convert_to_numpy(
+                        model.predict_model(frames, training=False)
+                    )
                     self.assertEqual(heatmaps.shape, (1, size, size, 2))
                     self.assertEqual(predictions.shape, (1, 2, 3))
                     self.assertTrue(np.isfinite(heatmaps).all())
@@ -178,7 +183,10 @@ class DeepLabCutWorkflowTests(unittest.TestCase):
         )
         reloaded = keras.Model.from_config(normalize_legacy_graph(config))
         frames = np.ones((1, 4, 4, 3), dtype=np.float32)
-        np.testing.assert_array_equal(reloaded(frames).numpy(), model(frames).numpy())
+        np.testing.assert_array_equal(
+            keras.ops.convert_to_numpy(reloaded(frames)),
+            keras.ops.convert_to_numpy(model(frames)),
+        )
 
 
 class DeepLabCutLegacyTests(BackboneWorkflowMixin, unittest.TestCase):

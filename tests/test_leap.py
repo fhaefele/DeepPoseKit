@@ -2,13 +2,14 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import keras
 import numpy as np
 from backbone_test_utils import BackboneWorkflowMixin
 from fixtures.backbone_reference import create_annotations
 
 from deepposekit.io import DataGenerator, TrainingGenerator
 from deepposekit.models import LEAP, load_model
+
+import keras
 
 
 class LEAPWorkflowTest(BackboneWorkflowMixin, unittest.TestCase):

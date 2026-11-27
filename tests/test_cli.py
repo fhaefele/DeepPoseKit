@@ -1,5 +1,6 @@
 from contextlib import ExitStack, chdir, redirect_stderr, redirect_stdout
 from importlib.machinery import ModuleSpec
+from importlib.util import find_spec
 from io import StringIO
 import json
 import os
@@ -30,6 +31,7 @@ class TerminalTests(unittest.TestCase):
     def test_executable_prepares_cuda_and_programmatic_calls_stay_in_process(self):
         with (
             patch.object(sys, "argv", ["deepposekit", "doctor"]),
+            patch.dict(os.environ, {"KERAS_BACKEND": "tensorflow"}),
             patch("_deepposekit_gpu.prepare_cuda") as setup,
             patch("deepposekit.cli.operations.run") as run,
         ):
@@ -51,6 +53,7 @@ class TerminalTests(unittest.TestCase):
                 patch.object(sys.modules["__main__"], "__spec__", spec),
                 patch.object(sys, "orig_argv", [sys.executable, *original]),
                 patch.object(sys, "argv", ["deepposekit/__main__.py", "doctor"]),
+                patch.dict(os.environ, {"KERAS_BACKEND": "tensorflow"}),
                 patch("_deepposekit_gpu.prepare_cuda") as setup,
                 patch("deepposekit.cli.operations.run"),
             ):
@@ -65,6 +68,22 @@ class TerminalTests(unittest.TestCase):
         ):
             self.assertEqual(console_main(), 0)
         setup.assert_not_called()
+
+    def test_default_doctor_runs_without_tensorflow(self):
+        self.assertIsNone(find_spec("tensorflow"))
+        env = os.environ.copy()
+        env.pop("KERAS_BACKEND", None)
+        result = subprocess.run(
+            [sys.executable, "-m", "deepposekit", "doctor"],
+            env=env,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        report = json.loads(result.stdout)
+        self.assertEqual(report["keras_backend"], "torch")
+        self.assertTrue(report["pytorch"])
+        self.assertIn("CPU", report["devices"])
 
     def test_grouped_help_wraps_and_respects_color(self):
         class Terminal(StringIO):

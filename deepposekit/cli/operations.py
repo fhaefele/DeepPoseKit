@@ -589,19 +589,18 @@ def evaluate(args):
 
 
 def doctor(args):
-    from importlib.metadata import PackageNotFoundError, version
-
     import keras
-    import tensorflow as tf
+    import torch
 
-    from _deepposekit_gpu import bundled_cuda_installed
     from deepposekit import __version__
 
-    try:
-        cuda_runtime = version("nvidia-cuda-runtime-cu12")
-    except PackageNotFoundError:
-        cuda_runtime = None
-    devices = tf.config.list_physical_devices()
+    cuda_devices = [
+        torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())
+    ]
+    mps_available = torch.backends.mps.is_available()
+    devices = ["CPU", *cuda_devices]
+    if mps_available:
+        devices.append("MPS")
     print(
         json.dumps(
             {
@@ -609,12 +608,13 @@ def doctor(args):
                 "version": args.command_version,
                 "deepposekit": __version__,
                 "python": sys.version.split()[0],
-                "tensorflow": tf.__version__,
+                "pytorch": torch.__version__,
                 "keras": keras.__version__,
-                "cuda_wheels_installed": bundled_cuda_installed(),
-                "cuda_runtime": cuda_runtime,
-                "gpu_available": any(device.device_type == "GPU" for device in devices),
-                "devices": [device.name for device in devices],
+                "keras_backend": keras.config.backend(),
+                "cuda_wheels_installed": torch.version.cuda is not None,
+                "cuda_runtime": torch.version.cuda,
+                "gpu_available": torch.cuda.is_available() or mps_available,
+                "devices": devices,
             },
             indent=2,
         )

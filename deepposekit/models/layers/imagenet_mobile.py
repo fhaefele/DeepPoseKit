@@ -78,12 +78,12 @@ from __future__ import division
 import os
 import warnings
 import numpy as np
-import tensorflow.keras as keras
+import keras
 
 from deepposekit.models.layers import imagenet_utils
 from deepposekit.models.layers.imagenet_utils import decode_predictions
-from tensorflow.keras.layers import Layer
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from keras.layers import Layer
+from keras.applications.mobilenet_v2 import preprocess_input
 
 correct_pad = imagenet_utils.correct_pad
 _obtain_input_shape = imagenet_utils._obtain_input_shape
@@ -206,7 +206,7 @@ def MobileNetV2(
                 )
         if is_input_t_tensor:
             if backend.image_data_format == "channels_first":
-                if backend.int_shape(input_tensor)[1] != input_shape[1]:
+                if input_tensor.shape[1] != input_shape[1]:
                     raise ValueError(
                         "input_shape: ",
                         input_shape,
@@ -215,7 +215,7 @@ def MobileNetV2(
                         "do not meet the same shape requirements",
                     )
             else:
-                if backend.int_shape(input_tensor)[2] != input_shape[1]:
+                if input_tensor.shape[2] != input_shape[1]:
                     raise ValueError(
                         "input_shape: ",
                         input_shape,
@@ -246,11 +246,11 @@ def MobileNetV2(
             default_size = 224
         elif input_shape is None and backend.is_keras_tensor(input_tensor):
             if backend.image_data_format() == "channels_first":
-                rows = backend.int_shape(input_tensor)[2]
-                cols = backend.int_shape(input_tensor)[3]
+                rows = input_tensor.shape[2]
+                cols = input_tensor.shape[3]
             else:
-                rows = backend.int_shape(input_tensor)[1]
-                cols = backend.int_shape(input_tensor)[2]
+                rows = input_tensor.shape[1]
+                cols = input_tensor.shape[2]
 
             if rows == cols and rows in [96, 128, 160, 192, 224]:
                 default_size = rows
@@ -458,7 +458,7 @@ def _inverted_res_block(
 ):
     channel_axis = 1 if backend.image_data_format() == "channels_first" else -1
 
-    in_channels = backend.int_shape(inputs)[channel_axis]
+    in_channels = inputs.shape[channel_axis]
     pointwise_conv_filters = int(filters * alpha)
     pointwise_filters = _make_divisible(pointwise_conv_filters, 8)
     x = inputs
@@ -524,9 +524,9 @@ MODELS = {"mobilenetv2": MobileNetV2}
 
 if __name__ == "__main__":
 
-    from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-    from tensorflow.keras.layers import Input
-    from tensorflow.keras import Model
+    from keras.applications.mobilenet_v2 import preprocess_input
+    from keras.layers import Input
+    from keras import Model
 
     input_layer = Input((192, 192, 3))
     model = MobileNetV2(include_top=False)
