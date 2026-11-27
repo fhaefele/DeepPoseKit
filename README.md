@@ -11,7 +11,7 @@ with models, videos, and annotation datasets.
 
 ## Changes in this fork
 
-- **Updated runtime.** Use Python 3.12, TensorFlow 2.21, and Keras 3 with
+- **Updated runtime.** Use Python 3.12, PyTorch 2.11, and Keras 3 with
   locked uv installs and optional NVIDIA GPU support on Linux and WSL2.
   [Installation](#installation)
 - **Legacy model migration.** Load supported legacy HDF5 checkpoints,
@@ -39,19 +39,22 @@ uv run --locked python -c "from deepposekit.models import StackedDenseNet"
 
 ### NVIDIA GPU on Linux or WSL2
 
-Install the `gpu` extra on x86-64 Linux or WSL2 to add the CUDA libraries and
-compiler. `deepposekit` sets up those paths automatically. TensorFlow uses a
-visible NVIDIA GPU when available and runs on CPU when it sees no GPU.
+The checkout installs CPU wheels by default. On x86-64 Linux or WSL2 with a
+compatible NVIDIA driver, select the CUDA 12.8 build of PyTorch instead.
 
 ```bash
-uv sync --locked --extra gpu
-uv run --locked deepposekit doctor
+uv sync --locked --no-group cpu --extra gpu
+uv run --locked --no-group cpu --extra gpu deepposekit doctor
 ```
 
-`doctor` reports the command, DeepPoseKit, Python, TensorFlow, and Keras
-versions, the installed CUDA runtime, and whether TensorFlow can see a GPU.
-Set `CUDA_VISIBLE_DEVICES=-1` to run a command on CPU.
-[TensorFlow GPU installation guide](https://www.tensorflow.org/install/pip)
+Use the same flags on subsequent `uv run` commands to keep the CUDA build.
+`doctor` reports the PyTorch and Keras versions, active Keras backend, CUDA
+runtime, and visible devices. Set `CUDA_VISIBLE_DEVICES=-1` to run on CPU.
+[PyTorch installation guide](https://pytorch.org/get-started/locally/)
+
+DeepPoseKit selects the PyTorch backend when imported. If your notebook
+imports Keras first, set `KERAS_BACKEND=torch` before starting Python.
+The training and prediction environments only need PyTorch.
 
 ## Command line
 
@@ -61,15 +64,15 @@ without a checkout, replace `CLI_REF` with a fork tag or commit containing the C
 
 ```bash
 fork='git+https://github.com/fhaefele/DeepPoseKit.git@CLI_REF'
-uv tool install --python 3.12 "$fork"
+uv tool install --python 3.12 --torch-backend cpu "$fork"
 deepposekit --help
-uvx --python 3.12 --from "$fork" deepposekit --help
+uvx --python 3.12 --torch-backend cpu --from "$fork" deepposekit --help
 ```
 
-For a GPU tool install, select the extra once and use the same commands.
+For a GPU tool install on x86-64 Linux or WSL2, select the CUDA wheel index.
 
 ```bash
-uv tool install --python 3.12 "deepposekit[gpu] @ $fork"
+uv tool install --python 3.12 --torch-backend cu128 "$fork"
 deepposekit train training.toml
 ```
 
@@ -516,9 +519,9 @@ On Linux or WSL2 with an NVIDIA GPU, install the CUDA extra once and run
 the workflow with a GPU check.
 
 ```bash
-uv sync --locked --extra gpu
-uv run --locked deepposekit doctor
-uv run --locked python examples/cli_workflow.py --require-gpu
+uv sync --locked --no-group cpu --extra gpu
+uv run --locked --no-group cpu --extra gpu deepposekit doctor
+uv run --locked --no-group cpu --extra gpu python examples/cli_workflow.py --require-gpu
 ```
 
 Use `--output-dir cli-demo` to keep the generated files in a new directory.

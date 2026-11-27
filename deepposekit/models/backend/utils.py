@@ -19,8 +19,6 @@ from keras.config import backend, image_data_format
 
 if backend() == "torch":
     from torch.fft import fft2 as _fft2, ifft2 as _ifft2
-else:
-    from tensorflow.signal import fft2d as _fft2, ifft2d as _ifft2
 
 
 __all__ = [
@@ -52,12 +50,22 @@ def fix(x):
     return ops.where(x >= 0, ops.floor(x), ops.ceil(x))
 
 
+def _complex_from_parts(parts):
+    real, imag = parts
+    return ops.cast(real, "complex64") + 1j * ops.cast(imag, "complex64")
+
+
 def fft2d(x):
-    return _fft2(ops.cast(x, "complex64"))
+    x = ops.cast(x, "complex64")
+    if backend() == "torch":
+        return _fft2(x)
+    return _complex_from_parts(ops.fft2((ops.real(x), ops.imag(x))))
 
 
 def ifft2d(x):
-    return _ifft2(x)
+    if backend() == "torch":
+        return _ifft2(x)
+    return _complex_from_parts(ops.ifft2((ops.real(x), ops.imag(x))))
 
 
 def find_maxima(x):
@@ -72,12 +80,7 @@ def fftshift1d(x, axis=0):
     """Shift a flattened signal and restore its original shape."""
     x_shape = ops.shape(x)
     flattened = ops.reshape(x, (-1, 1))
-    if backend() == "tensorflow":
-        from tensorflow.signal import fftshift
-
-        shifted = fftshift(flattened, axes=axis)
-    else:
-        shifted = ops.roll(flattened, ops.shape(flattened)[axis] // 2, axis=axis)
+    shifted = ops.roll(flattened, ops.shape(flattened)[axis] // 2, axis=axis)
     return ops.reshape(shifted, x_shape)
 
 

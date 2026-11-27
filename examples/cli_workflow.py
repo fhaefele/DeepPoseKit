@@ -108,10 +108,7 @@ def _run(directory, require_gpu):
     _prepare(directory)
     env = os.environ.copy()
     env.setdefault("MPLBACKEND", "Agg")
-    for name in ("TF_NUM_INTRAOP_THREADS", "TF_NUM_INTEROP_THREADS", "OMP_NUM_THREADS"):
-        env.setdefault(name, "1")
-    if require_gpu:
-        env["TF_CPP_MIN_LOG_LEVEL"] = "0"
+    env.setdefault("OMP_NUM_THREADS", "1")
     for _, argv in EXAMPLES:
         print(shlex.join(["deepposekit", *argv]), flush=True)
         result = subprocess.run(
@@ -127,11 +124,9 @@ def _run(directory, require_gpu):
             )
         if argv == ("doctor",):
             report = json.loads(result.stdout)
-            print("TensorFlow devices:", ", ".join(report["devices"]), flush=True)
+            print("PyTorch devices:", ", ".join(report["devices"]), flush=True)
             if require_gpu and not report["gpu_available"]:
-                raise RuntimeError(
-                    "TensorFlow did not report a GPU. Check deepposekit doctor."
-                )
+                raise RuntimeError("PyTorch did not report a GPU. Check deepposekit doctor.")
         elif argv[:2] == ("imgaug", "toml"):
             names = [
                 item["name"]
@@ -142,12 +137,6 @@ def _run(directory, require_gpu):
         elif argv[0] == "help":
             if json.loads(result.stdout)["command"]["path"] != ["dataset", "split"]:
                 raise RuntimeError("JSON help returned the wrong command")
-        elif require_gpu and argv[0] in {"train", "predict"}:
-            print(result.stderr, end="", file=sys.stderr, flush=True)
-            if "device:GPU:" not in result.stderr:
-                raise RuntimeError(
-                    f"{argv[0]} did not initialize a TensorFlow GPU device"
-                )
     _check_files(directory)
     print(f"Passed {len(EXAMPLES)} CLI examples.", flush=True)
 
@@ -157,7 +146,7 @@ def main():
     parser.add_argument(
         "--require-gpu",
         action="store_true",
-        help="Require a visible GPU and verify GPU initialization during training and prediction.",
+        help="Require PyTorch to report a visible GPU before running the examples.",
     )
     parser.add_argument(
         "--output-dir",

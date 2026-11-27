@@ -13,16 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorflow.keras import layers
-from tensorflow.keras import backend as K
 import numpy as np
+from keras import layers
+from keras.config import image_data_format
 
 
 def channel_squeeze_excite_block(input, ratio=0.25):
     init = input
-    channel_axis = 1 if K.image_data_format() == "channels_first" else -1
-    filters = init._keras_shape[channel_axis]
-    cse_shape = (1, 1, filters)
+    channels_first = image_data_format() == "channels_first"
+    channel_axis = 1 if channels_first else -1
+    filters = init.shape[channel_axis]
+    cse_shape = (filters, 1, 1) if channels_first else (1, 1, filters)
 
     cse = layers.GlobalAveragePooling2D()(init)
     cse = layers.Reshape(cse_shape)(cse)
@@ -37,7 +38,7 @@ def channel_squeeze_excite_block(input, ratio=0.25):
         kernel_initializer="he_normal",
         use_bias=False,
     )(cse)
-    cse = layers.BatchNormalization()(cse)
+    cse = layers.BatchNormalization(axis=channel_axis)(cse)
     cse = layers.Conv2D(
         filters,
         (1, 1),
@@ -45,9 +46,6 @@ def channel_squeeze_excite_block(input, ratio=0.25):
         kernel_initializer="he_normal",
         use_bias=False,
     )(cse)
-
-    if K.image_data_format() == "channels_first":
-        cse = layers.Permute((3, 1, 2))(cse)
 
     cse = layers.Multiply()([init, cse])
     return cse

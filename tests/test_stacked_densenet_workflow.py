@@ -5,10 +5,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import h5py
-import keras
 import numpy as np
 import pandas as pd
-import tensorflow as tf
+import torch
 
 from deepposekit import FlipAxis
 from deepposekit.io import (
@@ -19,9 +18,15 @@ from deepposekit.io import (
     initialize_dataset,
 )
 from deepposekit.models import StackedDenseNet, load_model
-from deepposekit.models.backend.backend import depth_to_space, space_to_depth
+from deepposekit.models.backend.backend import (
+    depth_to_space,
+    resize_images,
+    space_to_depth,
+)
 from deepposekit.models.backend.utils import fftshift1d
 from deepposekit.utils.keypoints import graph_to_edges
+
+import keras
 
 
 def write_lossless_video(path, frames):
@@ -34,21 +39,23 @@ def write_lossless_video(path, frames):
 
 
 class StackedDenseNetWorkflowTests(unittest.TestCase):
-    def test_subpixel_fftshift_compiles_for_odd_and_even_lengths(self):
-        compiled_shift = tf.function(fftshift1d, jit_compile=True)
+    def test_subpixel_fftshift_for_odd_and_even_lengths(self):
         for size in (4, 5):
             with self.subTest(size=size):
                 values = np.arange(size, dtype=np.float32)
-                np.testing.assert_array_equal(compiled_shift(values), np.fft.fftshift(values))
+                np.testing.assert_array_equal(fftshift1d(values), np.fft.fftshift(values))
 
-    def test_subpixel_reshaping_preserves_tensorflow_channel_order(self):
-        images = tf.reshape(tf.range(120, dtype=tf.float32), (1, 4, 6, 5))
-        expected = tf.nn.space_to_depth(images, 2)
+    def test_subpixel_reshaping_preserves_legacy_channel_order(self):
+        images = np.arange(120, dtype=np.float32).reshape(1, 4, 6, 5)
+        expected = np.concatenate(
+            [images[:, row::2, col::2] for row in range(2) for col in range(2)],
+            axis=-1,
+        )
         for data_format in ("channels_first", "channels_last"):
             with self.subTest(data_format=data_format):
                 if data_format == "channels_first":
-                    source = tf.transpose(images, (0, 3, 1, 2))
-                    downscaled = tf.transpose(expected, (0, 3, 1, 2))
+                    source = images.transpose(0, 3, 1, 2)
+                    downscaled = expected.transpose(0, 3, 1, 2)
                 else:
                     source, downscaled = images, expected
                 np.testing.assert_array_equal(
@@ -57,6 +64,26 @@ class StackedDenseNetWorkflowTests(unittest.TestCase):
                 np.testing.assert_array_equal(
                     depth_to_space(downscaled, 2, data_format), source
                 )
+
+    def test_resize_images_aligns_corners_and_preserves_nearest_dtype(self):
+        image = torch.tensor([[[[0, 30], [60, 90]]]], dtype=torch.uint8)
+        nearest = resize_images(image, 2, 2, "nearest", "channels_first")
+        self.assertEqual(nearest.dtype, torch.uint8)
+        np.testing.assert_array_equal(
+            nearest[0, 0],
+            [[0, 0, 30, 30], [0, 0, 30, 30], [60, 60, 90, 90], [60, 60, 90, 90]],
+        )
+        for method in ("bilinear", "bicubic"):
+            resized = resize_images(
+                image.permute(0, 2, 3, 1), 2, 2, method, "channels_last"
+            )
+            np.testing.assert_allclose(resized[0, ::3, ::3, 0], image[0, 0])
+        bilinear = resize_images(image, 2, 2, "bilinear", "channels_first")
+        np.testing.assert_allclose(
+            bilinear[0, 0],
+            [[0, 10, 20, 30], [20, 30, 40, 50], [40, 50, 60, 70], [60, 70, 80, 90]],
+            atol=1e-5,
+        )
 
     def test_skeleton_parent_graph_resolves_valid_roots_and_rejects_cycles(self):
         graph = np.array([2, 0, -1, 2, 1, -1], dtype=np.float64)

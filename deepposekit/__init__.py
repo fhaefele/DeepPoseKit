@@ -15,7 +15,10 @@
 
 """Tools for animal pose estimation."""
 
+import os
 from importlib import import_module
+
+os.environ.setdefault("KERAS_BACKEND", "torch")
 
 __version__ = "0.6.0"
 

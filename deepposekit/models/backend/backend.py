@@ -42,60 +42,33 @@ def resize_images(x, height_factor, width_factor, interpolation, data_format):
     # Raises
         ValueError: if `data_format` is neither `"channels_last"` or `"channels_first"`.
     """
-    import tensorflow as tf
+    from torch.nn.functional import interpolate
 
+    data_format = normalize_data_format(data_format)
+    x = ops.convert_to_tensor(x)
+    if data_format == "channels_last":
+        x = ops.transpose(x, (0, 3, 1, 2))
+    height, width = x.shape[2:]
+    output_size = (height * height_factor, width * width_factor)
     if interpolation == "nearest":
-        tf_resize = tf.compat.v1.image.resize_nearest_neighbor
-    elif interpolation == "bilinear":
-        tf_resize = tf.compat.v1.image.resize_bilinear
-    elif interpolation == "bicubic":
-        tf_resize = tf.compat.v1.image.resize_bicubic
+        # Match the original align-corners sampling, including half-up ties.
+        for axis, size, scaled in zip((2, 3), (height, width), output_size):
+            denominator = max(scaled - 1, 1)
+            positions = ops.arange(scaled, dtype="int64") * (size - 1)
+            indices = (2 * positions + denominator) // (2 * denominator)
+            x = ops.take(x, indices, axis=axis)
+    elif interpolation in {"bilinear", "bicubic"}:
+        x = interpolate(
+            ops.cast(x, "float32"),
+            size=output_size,
+            mode=interpolation,
+            align_corners=True,
+        )
     else:
         raise ValueError("Invalid interpolation method:", interpolation)
-    if data_format == "channels_first":
-        original_shape = x.shape
-        new_shape = tf.shape(x)[2:]
-        new_shape *= tf.constant(
-            [height_factor, width_factor], dtype=tf.int32
-        )
-        x = tf.transpose(x, [0, 2, 3, 1])
-        x = tf_resize(x, new_shape, align_corners=True)
-        x = tf.transpose(x, [0, 3, 1, 2])
-        x.set_shape(
-            (
-                None,
-                None,
-                original_shape[2] * height_factor
-                if original_shape[2] is not None
-                else None,
-                original_shape[3] * width_factor
-                if original_shape[3] is not None
-                else None,
-            )
-        )
-        return x
-    elif data_format == "channels_last":
-        original_shape = x.shape
-        new_shape = tf.shape(x)[1:3]
-        new_shape *= tf.constant(
-            [height_factor, width_factor], dtype=tf.int32
-        )
-        x = tf_resize(x, new_shape, align_corners=True)
-        x.set_shape(
-            (
-                None,
-                original_shape[1] * height_factor
-                if original_shape[1] is not None
-                else None,
-                original_shape[2] * width_factor
-                if original_shape[2] is not None
-                else None,
-                None,
-            )
-        )
-        return x
-    else:
-        raise ValueError("Invalid data_format:", data_format)
+    if data_format == "channels_last":
+        x = ops.transpose(x, (0, 2, 3, 1))
+    return x
 
 
 def _find_maxima(x, coordinate_scale=1, confidence_scale=255.0):
